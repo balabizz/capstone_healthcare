@@ -13,6 +13,7 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 NOTEBOOKS_DIR = PROJECT_ROOT / "notebooks"
+SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", str(DATA_DIR / "healthcare.db"))
 
 # Ensure directories exist
 for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, EMBEDDINGS_DIR]:

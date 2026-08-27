@@ -1,4 +1,4 @@
-"""ChromaDB vector store integration."""
+"""ChromaDB vector store integration for document chunks used by RAG."""
 
 from typing import List, Dict, Any
 from langchain.vectorstores import Chroma

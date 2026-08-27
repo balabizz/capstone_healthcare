@@ -169,18 +169,32 @@ cp .env.example .env
 # Edit .env with your API keys (OpenAI, Bing Search, etc.)
 ```
 
-### 2. Initialize Patient Database & Doctor Schedule
+### 2. Initialize SQLite Patient and Doctor Database
 ```python
-# Setup mock EHR database and doctor schedules
-from src.tools.ehr_tool import EHRManager
-from src.tools.appointment_tool import AppointmentScheduler
+from src.config import SQLITE_DB_PATH
+from src.database.sqlite_store import SQLiteStore
+from src.models.doctor_vo import DoctorVO
+from src.models.patient_vo import PatientVO
 
-ehr = EHRManager()
-scheduler = AppointmentScheduler()
-
-# Add sample doctors and appointments
-scheduler.add_doctor("Dr. Smith", specialty="Nephrologist", available_slots=[...])
+ehr = SQLiteStore(SQLITE_DB_PATH)
+ehr.save_patient(PatientVO(patient_id="patient_123", first_name="John", last_name="Doe"))
+ehr.save_doctor(DoctorVO(
+    doctor_id="doctor_001",
+    first_name="Jane",
+    last_name="Smith",
+    speciality="Nephrologist",
+    license_number="LIC-001",
+))
 ```
+
+SQLite stores structured patient and doctor records. ChromaDB remains separate and stores document chunks and embeddings for RAG retrieval.
+
+The SQLite EHR schema also includes:
+
+- `appointments`: relates one patient to one doctor for a scheduled visit.
+- `medical_history`: relates a patient to diagnoses and optionally the recording doctor.
+- `prescriptions`: relates a patient and prescribing doctor, optionally to an appointment.
+- `billing`: relates a patient and optionally the appointment being billed.
 
 ### 3. Initialize Vector Store for Patient Context
 ```python
@@ -196,7 +210,7 @@ documents = loader.load_multiple_pdfs("data/raw")
 processor = TextProcessor()
 chunks = processor.process_documents(documents)
 
-# Create vector store for fast retrieval
+# Create a vector store for document chunks and embeddings used by RAG
 store = ChromaDBStore()
 store.create_store([c["content"] for c in chunks], 
                    [c["metadata"] for c in chunks])

@@ -87,19 +87,6 @@ class PatientVO:
             data["updated_at"] = updated.isoformat()
         return cls(**data)
 
-    def to_metadata(self) -> Dict[str, Any]:
-        """Alias for to_dict; kept for semantic clarity when storing in Chroma.
-
-        Use this dict as the "metadata" parameter when inserting documents into
-        Chroma so application-level patient fields are preserved alongside vectors.
-        """
-        return self.to_dict()
-
-    @classmethod
-    def from_metadata(cls, meta: Dict[str, Any]) -> "PatientVO":
-        """Create a PatientVO from Chroma metadata (same shape as to_metadata)."""
-        return cls.from_dict(meta)
-
     def with_updates(self, **kwargs: Any) -> "PatientVO":
         """Return a shallow copy of the VO with provided fields updated.
 

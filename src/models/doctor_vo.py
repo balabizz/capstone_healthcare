@@ -89,15 +89,6 @@ class DoctorVO:
             data["updated_at"] = updated.isoformat()
         return cls(**data)
 
-    def to_metadata(self) -> Dict[str, Any]:
-        """Alias for to_dict; kept for semantic clarity when storing in Chroma."""
-        return self.to_dict()
-
-    @classmethod
-    def from_metadata(cls, meta: Dict[str, Any]) -> "DoctorVO":
-        """Create a DoctorVO from Chroma metadata (same shape as to_metadata)."""
-        return cls.from_dict(meta)
-
     def with_updates(self, **kwargs: Any) -> "DoctorVO":
         """Return a shallow copy of the VO with provided fields updated.
 
