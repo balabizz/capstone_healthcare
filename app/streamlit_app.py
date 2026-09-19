@@ -1,9 +1,9 @@
 """Streamlit web application for healthcare RAG system."""
 
-import sqlite3
 import sys
-from datetime import date, time
+from datetime import date
 from pathlib import Path
+from time import perf_counter
 from uuid import uuid4
 
 import streamlit as st
@@ -11,188 +11,14 @@ import streamlit as st
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config import SQLITE_DB_PATH
-from src.llm.llm_client import LLMClient
-from src.chains.rag_chain import RAGChain
-from src.models.patient_vo import PatientVO
+from src.agents.goal_execution import APPOINTMENT_SLOTS, GoalExecution
+from src.agents.planner import Planner
+from src.repositories.agent_event_repository import AgentEventRepository
 
 
-def get_user_profile(username: str, user_type: str) -> dict | None:
-    """Retrieve the profile linked to an authenticated login."""
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        if user_type == "patient":
-            row = connection.execute(
-                """
-                SELECT p.patient_id, p.first_name, p.last_name, p.gender,
-                       p.date_of_birth
-                FROM login_details AS l
-                JOIN patients AS p ON p.patient_id = l.patient_id
-                WHERE l.username = ? AND l.user_type = ? AND l.is_active = 1
-                """,
-                (username, user_type),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                """
-                SELECT d.doctor_id, d.first_name, d.last_name,
-                       d.speciality, d.license_number
-                FROM login_details AS l
-                JOIN doctors AS d ON d.doctor_id = l.doctor_id
-                WHERE l.username = ? AND l.user_type = ? AND l.is_active = 1
-                """,
-                (username, user_type),
-            ).fetchone()
-    finally:
-        connection.close()
-
-    if row is None:
-        return None
-
-    profile = dict(row)
-    if user_type == "patient":
-        patient = PatientVO.from_dict(profile)
-        profile["age"] = patient.age()
-    return profile
-
-
-APPOINTMENT_SLOTS = [
-    time(hour=hour, minute=minute).strftime("%H:%M")
-    for hour, minute in [
-        (9, 0), (9, 30), (10, 0), (10, 30), (11, 0), (11, 30),
-        (12, 0), (12, 30), (15, 0), (15, 30), (16, 0), (16, 30),
-        (17, 0), (17, 30), (18, 0), (18, 30), (19, 0), (19, 30),
-    ]
-]
-
-
-def get_specialties() -> list[str]:
-    """Return the specialties currently offered by doctors."""
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    try:
-        rows = connection.execute(
-            "SELECT DISTINCT speciality FROM doctors "
-            "WHERE speciality IS NOT NULL ORDER BY speciality"
-        ).fetchall()
-    finally:
-        connection.close()
-    return [row[0] for row in rows]
-
-
-def get_available_doctors(speciality: str | None, appointment_date: date, slot: str) -> list[dict]:
-    """Return free doctors, optionally limited to a specialty."""
-    appointment_datetime = f"{appointment_date.isoformat()} {slot}"
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute(
-            """
-            SELECT d.doctor_id, d.first_name, d.last_name, d.speciality
-            FROM doctors AS d
-                        WHERE (? IS NULL OR d.speciality = ?)
-              AND NOT EXISTS (
-                  SELECT 1 FROM appointments AS a
-                  WHERE a.doctor_id = d.doctor_id
-                    AND a.appointment_datetime = ?
-                    AND a.status = 'scheduled'
-              )
-            ORDER BY d.last_name, d.first_name
-            """,
-            (speciality, speciality, appointment_datetime),
-        ).fetchall()
-    finally:
-        connection.close()
-    return [dict(row) for row in rows]
-
-
-def book_appointment(
-    patient_id: str,
-    doctor_id: str,
-    appointment_date: date,
-    slot: str,
-    reason: str,
-) -> bool:
-    """Book an available 30-minute appointment slot for a patient."""
-    if slot not in APPOINTMENT_SLOTS:
-        raise ValueError("Appointment time must be within the available hours")
-
-    appointment_datetime = f"{appointment_date.isoformat()} {slot}"
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    try:
-        connection.execute(
-            """
-            INSERT INTO appointments (
-                appointment_id, patient_id, doctor_id,
-                appointment_datetime, reason
-            )
-            SELECT ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (
-                SELECT 1 FROM appointments
-                WHERE doctor_id = ?
-                  AND appointment_datetime = ?
-                  AND status = 'scheduled'
-            )
-            """,
-            (
-                f"appointment-{uuid4().hex}", patient_id, doctor_id,
-                appointment_datetime, reason.strip() or None,
-                doctor_id, appointment_datetime,
-            ),
-        )
-        booked = connection.total_changes == 1
-        connection.commit()
-    finally:
-        connection.close()
-    return booked
-
-
-def get_patient_appointments(patient_id: str) -> list[dict]:
-    """Return a patient's scheduled appointments."""
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute(
-            """
-            SELECT a.appointment_datetime, a.status, a.reason,
-                   d.first_name || ' ' || d.last_name AS doctor_name,
-                   d.speciality
-            FROM appointments AS a
-            JOIN doctors AS d ON d.doctor_id = a.doctor_id
-            WHERE a.patient_id = ?
-            ORDER BY a.appointment_datetime
-            """,
-            (patient_id,),
-        ).fetchall()
-    finally:
-        connection.close()
-    return [dict(row) for row in rows]
-
-
-def get_doctor_schedule(doctor_id: str, schedule_date: date) -> list[dict]:
-    """Return a doctor's appointments for one day."""
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        rows = connection.execute(
-            """
-            SELECT a.appointment_datetime, a.status, a.reason,
-                   p.first_name || ' ' || p.last_name AS patient_name,
-                   p.patient_id
-            FROM appointments AS a
-            JOIN patients AS p ON p.patient_id = a.patient_id
-            WHERE a.doctor_id = ?
-              AND date(a.appointment_datetime) = ?
-            ORDER BY a.appointment_datetime
-            """,
-            (doctor_id, schedule_date.isoformat()),
-        ).fetchall()
-    finally:
-        connection.close()
-    return [dict(row) for row in rows]
-
-
-def render_appointment_view(profile: dict, user_type: str) -> None:
+def render_appointment_view(
+    profile: dict, user_type: str, goal_execution: GoalExecution
+) -> None:
     """Render patient booking or doctor daily schedule."""
     if st.button("Back to Medical Assistant", key="back_to_assistant"):
         st.session_state.appointment_view = False
@@ -204,14 +30,14 @@ def render_appointment_view(profile: dict, user_type: str) -> None:
         appointment_date = st.date_input(
             "Appointment date", min_value=date.today(), key="patient_appointment_date"
         )
-        specialties = get_specialties()
+        specialties = goal_execution.get_specialties()
         speciality_choice = st.selectbox(
             "Speciality preference", ["Any speciality"] + specialties,
             key="patient_speciality",
         )
         speciality = None if speciality_choice == "Any speciality" else speciality_choice
         slot = st.selectbox("Available time", APPOINTMENT_SLOTS, key="patient_slot")
-        doctors = get_available_doctors(speciality, appointment_date, slot)
+        doctors = goal_execution.get_available_doctors(speciality, appointment_date, slot)
         if doctors:
             st.caption(f"{len(doctors)} doctor(s) available for this time slot")
             doctor_options = {
@@ -223,9 +49,11 @@ def render_appointment_view(profile: dict, user_type: str) -> None:
             )
             reason = st.text_input("Reason for visit", key="appointment_reason")
             if st.button("Book appointment", key="book_appointment"):
-                if book_appointment(
+                booking_request_id = f"request-{uuid4().hex}"
+                if goal_execution.book_appointment(
                     profile["patient_id"], doctor_options[selected_doctor],
-                    appointment_date, slot, reason
+                    appointment_date, slot, reason,
+                    request_id=booking_request_id,
                 ):
                     st.success("Appointment booked successfully")
                     st.rerun()
@@ -235,7 +63,7 @@ def render_appointment_view(profile: dict, user_type: str) -> None:
             st.info("No doctor is available for this speciality and time.")
 
         st.subheader("My appointments")
-        appointments = get_patient_appointments(profile["patient_id"])
+        appointments = goal_execution.get_patient_appointments(profile["patient_id"])
         if appointments:
             st.dataframe(appointments, use_container_width=True, hide_index=True)
         else:
@@ -244,7 +72,7 @@ def render_appointment_view(profile: dict, user_type: str) -> None:
         schedule_date = st.date_input(
             "Schedule date", value=date.today(), key="doctor_schedule_date"
         )
-        schedule = get_doctor_schedule(profile["doctor_id"], schedule_date)
+        schedule = goal_execution.get_doctor_schedule(profile["doctor_id"], schedule_date)
         st.subheader(f"Schedule for {schedule_date.strftime('%d %B %Y')}")
         if schedule:
             st.dataframe(schedule, use_container_width=True, hide_index=True)
@@ -252,28 +80,11 @@ def render_appointment_view(profile: dict, user_type: str) -> None:
             st.info("No patients scheduled for this day")
 
 
-def authenticate_user(username: str, password: str, user_type: str) -> bool:
-    """Return whether credentials match an active login record."""
-    connection = sqlite3.connect(SQLITE_DB_PATH)
-    try:
-        record = connection.execute(
-            """
-            SELECT 1
-            FROM login_details
-            WHERE username = ?
-              AND password_hash = ?
-              AND user_type = ?
-              AND is_active = 1
-            """,
-            (username.strip().lower(), password, user_type),
-        ).fetchone()
-    finally:
-        connection.close()
-    return record is not None
-
-
 def main():
     """Run the Streamlit application."""
+    goal_execution = GoalExecution()
+    event_repository = AgentEventRepository(goal_execution.database_path)
+    planner = Planner()
     st.set_page_config(
         page_title="Agentic Healthcare Assistant",
         page_icon="🏥",
@@ -300,7 +111,7 @@ def main():
         if submitted:
             if user_type not in ("patient", "doctor"):
                 st.error("Please select a valid user type")
-            elif authenticate_user(username, password, user_type):
+            elif goal_execution.authenticate_user(username, password, user_type):
                 st.session_state.authenticated_user = {
                     "username": username.strip().lower(),
                     "user_type": user_type,
@@ -314,7 +125,7 @@ def main():
     st.title(f"🏥 Medical Assistant for {authenticated_user['user_type'].title()}s")
     st.markdown("Ask a medical question and receive an AI-assisted response")
 
-    profile = get_user_profile(
+    profile = goal_execution.get_user_profile(
         authenticated_user["username"], authenticated_user["user_type"]
     )
     if profile is None:
@@ -345,7 +156,7 @@ def main():
             st.rerun()
 
     if st.session_state.appointment_view:
-        render_appointment_view(profile, authenticated_user["user_type"])
+        render_appointment_view(profile, authenticated_user["user_type"], goal_execution)
         return
 
     col1, col2 = st.columns([2, 1])
@@ -360,13 +171,35 @@ def main():
         if st.button("Submit", key="submit_btn"):
             if query:
                 with st.spinner("Searching and generating response..."):
-                    LLMClient()
-
-                    from src.vector_store.chromadb_store import ChromaDBStore
-                    vectorstore = ChromaDBStore().load_store()
-
-                    rag_chain = RAGChain(vectorstore)
-                    result = rag_chain.query(query)
+                    request_id = f"request-{uuid4().hex}"
+                    planning_started = perf_counter()
+                    try:
+                        goals = planner.plan(query)
+                        event_repository.log(
+                            request_id=request_id,
+                            patient_id=profile.get("patient_id"),
+                            event_type="plan_created",
+                            tool_name="planner",
+                            status="success",
+                            duration_ms=round(
+                                (perf_counter() - planning_started) * 1000
+                            ),
+                            details={"goal_types": [goal.name for goal in goals]},
+                        )
+                        result = goal_execution.execute(
+                            goals[0], request_id=request_id,
+                            patient_id=profile.get("patient_id"),
+                        )
+                    except Exception as error:
+                        event_repository.log(
+                            request_id=request_id,
+                            patient_id=profile.get("patient_id"),
+                            event_type="request_failed",
+                            status="failed",
+                            details={"error_type": type(error).__name__},
+                        )
+                        st.error("The request could not be completed. Please try again.")
+                        return
 
                     st.session_state.chat_history.append(
                         {"query": query, "answer": result["answer"]}
@@ -399,6 +232,29 @@ def main():
                 st.rerun()
         else:
             st.info("No chat history yet")
+
+        if authenticated_user["user_type"] == "patient":
+            with st.expander("Agent Execution, Memory Traces & Tool Logs"):
+                events = event_repository.list_events(
+                    patient_id=profile["patient_id"], limit=20
+                )
+                if events:
+                    st.dataframe(
+                        [
+                            {
+                                "time": event["created_at"],
+                                "event": event["event_type"],
+                                "tool": event["tool_name"],
+                                "status": event["status"],
+                                "duration_ms": event["duration_ms"],
+                            }
+                            for event in events
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                else:
+                    st.info("No agent execution events recorded yet")
 
 
 if __name__ == "__main__":

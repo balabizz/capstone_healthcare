@@ -158,6 +158,26 @@ class SQLiteStore:
                     ON prescriptions (patient_id);
                 CREATE INDEX IF NOT EXISTS idx_billing_patient
                     ON billing (patient_id);
+
+                CREATE TABLE IF NOT EXISTS agent_events (
+                    event_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    patient_id TEXT,
+                    goal_id TEXT,
+                    event_type TEXT NOT NULL,
+                    tool_name TEXT,
+                    status TEXT NOT NULL,
+                    duration_ms INTEGER,
+                    details_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (patient_id) REFERENCES patients (patient_id)
+                        ON UPDATE CASCADE ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_events_request
+                    ON agent_events (request_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_events_patient
+                    ON agent_events (patient_id, created_at);
                 """
             )
 

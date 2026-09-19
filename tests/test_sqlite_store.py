@@ -22,6 +22,7 @@ def test_initializes_patient_and_doctor_tables(tmp_path):
         "medical_history",
         "prescriptions",
         "billing",
+        "agent_events",
     }.issubset(tables)
 
 

@@ -47,7 +47,6 @@ capstone_healthcare/
 │   │   └── embedding_manager.py # Embedding management
 │   │
 │   ├── vector_store/            # Vector database interfaces
-│   │   ├── chromadb_store.py    # ChromaDB integration
 │   │   └── faiss_store.py       # FAISS integration
 │   │
 │   ├── llm/                     # Language model interfaces
@@ -200,7 +199,7 @@ The SQLite EHR schema also includes:
 ```python
 from src.data_processing.pdf_loader import PDFLoader
 from src.data_processing.text_processing import TextProcessor
-from src.vector_store.chromadb_store import ChromaDBStore
+from src.vector_store.faiss_store import FAISSStore
 
 # Load medical documents
 loader = PDFLoader()
@@ -211,7 +210,7 @@ processor = TextProcessor()
 chunks = processor.process_documents(documents)
 
 # Create a vector store for document chunks and embeddings used by RAG
-store = ChromaDBStore()
+store = FAISSStore()
 store.create_store([c["content"] for c in chunks], 
                    [c["metadata"] for c in chunks])
 ```
@@ -295,8 +294,7 @@ The dashboard provides:
 - **TextProcessor**: Chunks documents using RecursiveCharacterTextSplitter
 
 ### Vector Storage
-- **ChromaDBStore**: Persistent vector storage with metadata
-- **FAISSStore**: Fast similarity search using FAISS indices
+- **FAISSStore**: Persistent vector storage and fast similarity search using FAISS indices
 
 ### LLM Integration
 - **LLMClient**: Interface for OpenAI API calls
@@ -313,8 +311,7 @@ OPENAI_API_KEY=your_key_here
 LLM_MODEL=gpt-3.5-turbo
 LLM_TEMPERATURE=0.7
 
-# Vector Database Paths
-CHROMADB_PATH=./data/embeddings/chromadb
+# Vector Database Path
 FAISS_INDEX_PATH=./data/embeddings/faiss
 
 # Tool APIs
@@ -385,9 +382,9 @@ print(f"Alerts: {result['alerts']}")
 ### Medical Information Retrieval
 ```python
 from src.chains.rag_chain import RAGChain
-from src.vector_store.chromadb_store import ChromaDBStore
+from src.vector_store.faiss_store import FAISSStore
 
-vectorstore = ChromaDBStore().load_store()
+vectorstore = FAISSStore().load_store()
 rag_chain = RAGChain(vectorstore)
 
 result = rag_chain.query("Latest treatment options for diabetes management")
