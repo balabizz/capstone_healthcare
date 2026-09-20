@@ -1,42 +1,22 @@
-"""Embedding generation and management."""
-
-from typing import List
-from langchain.embeddings.openai import OpenAIEmbeddings
+"""Batched OpenAI embeddings shared by reference ingestion and retrieval."""
+from langchain_core.embeddings import Embeddings
 from src.config import EMBEDDING_MODEL
+from src.vector_store.patient_summaries import SummaryEmbeddings
 
 
-class EmbeddingManager:
-    """Manage embeddings for documents."""
+class EmbeddingManager(Embeddings):
+    def __init__(self, model=EMBEDDING_MODEL, client=None):
+        self.model = model
+        self.client = client or SummaryEmbeddings(model=model)
 
-    def __init__(self, model: str = EMBEDDING_MODEL):
-        """
-        Initialize embedding manager.
-        
-        Args:
-            model: Embedding model to use
-        """
-        self.embeddings = OpenAIEmbeddings(model=model)
+    def embed_documents(self, texts):
+        vectors = []
+        for start in range(0, len(texts), 32):
+            vectors.extend(self.client.embed(texts[start:start+32]))
+        return vectors
 
-    def embed_text(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single text.
-        
-        Args:
-            text: Text to embed
-            
-        Returns:
-            Embedding vector
-        """
-        return self.embeddings.embed_query(text)
+    def embed_query(self, text):
+        return self.client.embed([text])[0]
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for multiple texts.
-        
-        Args:
-            texts: List of texts to embed
-            
-        Returns:
-            List of embedding vectors
-        """
-        return self.embeddings.embed_documents(texts)
+    def embed_text(self, text):
+        return self.embed_query(text)

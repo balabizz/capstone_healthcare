@@ -1,9 +1,8 @@
 """RAG (Retrieval Augmented Generation) chain implementation."""
 
 from typing import List, Dict, Any
-from langchain.chains import RetrievalQA
-from langchain.chat_models import ChatOpenAI
 from src.config import LLM_MODEL, LLM_TEMPERATURE
+from src.llm.task_prompts import reference_qa_prompt, NO_REFERENCE_ANSWER
 
 
 class RAGChain:
@@ -19,11 +18,15 @@ class RAGChain:
             model: LLM model to use
             temperature: Temperature for generation
         """
+        from langchain.chains import RetrievalQA
+        from langchain.chat_models import ChatOpenAI
         self.vectorstore = vectorstore
         self.llm = ChatOpenAI(model_name=model, temperature=temperature)
         self.chain = RetrievalQA.from_chain_type(
             llm=self.llm,
             chain_type="stuff",
+            chain_type_kwargs={"prompt": reference_qa_prompt()},
+            return_source_documents=True,
             retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
         )
 
@@ -40,27 +43,28 @@ class RAGChain:
         result = self.chain({"query": question})
         return {
             "question": question,
-            "answer": result["result"],
+            "answer": result["result"] if result.get("source_documents") else NO_REFERENCE_ANSWER,
             "source_documents": result.get("source_documents", [])
         }
 
-    def query_with_history(self, question: str, chat_history: List[tuple]) -> str:
-        """
-        Query with conversation history.
-        
-        Args:
-            question: Current question
-            chat_history: List of (question, answer) tuples
-            
-        Returns:
-            Generated answer
-        """
-        # Build context from history
-        history_context = "\n".join([
-            f"Q: {q}\nA: {a}" for q, a in chat_history
-        ])
-        
-        enhanced_question = f"Chat history:\n{history_context}\n\nNew question: {question}"
-        result = self.chain({"query": enhanced_question})
-        
-        return result["result"]
+    def query_with_history(self, question: str, chat_history: List[dict], *,
+                           check_access=None, context_client=None) -> Dict[str, Any]:
+        """Resolve dialogue references, then retrieve evidence using only the resolved question."""
+        from src.llm.conversation_context import resolve_question
+        if check_access:
+            check_access()
+        if not chat_history:
+            result = self.query(question)
+        else:
+            resolved = resolve_question(question, chat_history, client=context_client)
+            if check_access:
+                check_access()
+            if resolved['clarification']:
+                return {'question': question, 'answer': resolved['clarification'],
+                        'source_documents': [], 'needs_clarification': True}
+            result = self.query(resolved['question'])
+            result['standalone_question'] = resolved['question']
+            result['question'] = question
+        if check_access:
+            check_access()
+        return result

@@ -1,0 +1,20 @@
+Patient
+
+Username: aarav.sharma
+Password: patient
+User type: patient
+Patient test account
+
+Username: testpatient
+Password: patient
+User type: patient
+Doctor
+
+Username: amit.sharma
+Password: doctor
+User type: doctor
+Doctor test account
+
+Username: testdoctor
+Password: doctor
+User type: doctor

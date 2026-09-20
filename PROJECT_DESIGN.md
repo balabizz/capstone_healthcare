@@ -330,3 +330,260 @@ The capstone scenario passes only when the system:
 - separates general information from individualized medical advice;
 - records a redacted trace of every goal and tool outcome;
 - retrieves the updated patient summary in a later session.
+
+### Implemented family context for Step 12
+
+SQLite now includes `patient_dependents` (caller → relative, optional registered
+patient link) and `dependent_permissions` (record owner → requester, scoped grant).
+The Streamlit Family & dependents panel manages links and lets record owners grant
+or revoke individual permissions. The planner recognizes family references; the
+executor resolves one linked subject and checks access before proceeding. Booking
+and appointment-list services recheck their respective permissions. Clinical data
+continues to belong to the subject patient. See the README's Family and dependents
+section for the executable scenario and current limitations; `DEPENDENT_DESIGN.md`
+is the earlier proposal, not a description of all implemented features.
+
+### Implemented multi-step planning
+
+`Planner.plan()` now returns a validated `Plan`, generated through OpenAI strict
+JSON-schema output. `PlanExecution.run()` executes the allowed tools sequentially,
+resolves identity from the authenticated session, checks history/booking permissions,
+passes real results into final synthesis, and records per-step outcomes. The
+Streamlit screen displays the plan and provides a separate booking continuation.
+The history tool reads saved records; live medical search now retrieves PubMed/WHO
+evidence. Neither a proposed booking nor a failed search is recorded as a completed action. See the README's OpenAI
+multi-step planning section for configuration, acceptance flow and limitations.
+
+### Implemented automated scheduling
+
+The existing booking entry point now delegates calendar discovery and atomic booking
+to `ScheduleRepository`, directly or through the private `ScheduleAPIClient`.
+Recurring doctor working windows and days off constrain availability. Planner goals
+carry date/time/name preferences; appointment execution proposes concrete slots.
+Confirmation keeps the existing appointments table and user views. SQLite transactions
+prevent conflicting doctor/patient bookings, and request keys make retries idempotent.
+The bundled HTTP service shares the application's database; no third-party schedule
+provider has been configured. See the README for its contract and startup steps.
+
+### Implemented attendant medical-record workflow
+
+Attendants authenticate through the existing login flow with a new constrained role
+and hashed passwords. Trusted CLI provisioning assigns patients; application tools
+recheck active status and assignment for each operation. The dedicated Streamlit
+editor adds/updates diagnoses, treatments and standalone clinical notes in the
+existing medical_history table. Version checks prevent lost edits, save request IDs
+prevent duplicates, and before/after revisions plus identifier-only tool events
+commit atomically. Existing account and medical-history data migrate in place.
+The authorized history-summary flow includes these saved records. See the README
+for account setup, editor usage, access controls and current testing limitations.
+
+### Implemented patient-history retrieval and LLM summary
+
+The history tool now delegates to `PatientHistoryRepository` for a bounded,
+patient-scoped snapshot of diagnoses/treatments/notes, prescriptions and structured
+alerts. `PlanningClient.summarize_history()` uses strict structured output with an
+allowlist of exact source references; the renderer validates category attribution
+and medication/active-alert coverage. Operational outcomes are appended without
+rewriting the clinical summary. The UI exposes the source snapshot, recorded active
+alerts, and completeness limitations. Assigned attendants can add/resolve documented
+alerts. Medical authorization is rechecked around retrieval/generation and when
+cached history is displayed. No current medication use, new alerts or treatment
+recommendations are inferred from missing records. See the README for limits and
+live synthetic validation results.
+
+### Implemented live medical information retrieval
+
+`MedicalSearch` integrates NCBI ESearch/EFetch (PubMed/MEDLINE records) and the WHO
+publications API. It normalizes a general topic, applies an explicit publication-date
+window, bounds downloads/results, filters known retractions, and records independent
+provider outcomes. The executor's medical_search goal passes live evidence to a
+source-constrained OpenAI synthesis step. The UI exposes dated source links and
+provider coverage; no local-index fallback is presented as current evidence. History
+and public-search model inputs remain separate. See the README for configuration,
+privacy limitations, provider contracts and live validation results.
+
+### Implemented: patient-summary FAISS pipeline
+
+The history reader fingerprints the full clinical source snapshot in its read
+transaction. The default plan executor captures the validated clinical-only LLM
+summary and indexes it with OpenAI embeddings in a patient-specific native FAISS
+IndexFlatIP (normalized vectors for cosine ranking). SQLite atomically persists the
+serialized FAISS index and its JSON metadata in `patient_summary_vectors`; public
+reference indexes remain separate. Rebuild and semantic search are exposed in the
+patient UI for self and authorized dependents. Search never performs a global
+patient search followed by filtering: it selects exactly the authorized patient's
+index. Changed sources, clinic date or embedding model reject stale retrieval.
+Authorization and freshness are rechecked after external embedding calls. This is
+a latest-summary cache, not longitudinal summary version storage; source record
+revision history remains in the medical-record tables. Search returns excerpts
+with the original source snapshot and coverage, not a newly inferred diagnosis.
+
+### Implemented: long-term patient conversational memory — BRD mapping
+
+Checked against `reference/healthcare_project_brd.pdf`:
+
+| Requirement | Implementation |
+| --- | --- |
+| Part 1 §2, page 3: retain long-term patient context | Durable `patient_conversations` table; independent of audit events and FAISS summary snapshots. |
+| Part 1 §3, page 3: incorporate context through memory lookups | `ConversationFlow` resolves the subject, retrieves scoped recent/relevant turns, and supplies historical context to `Planner.plan`. |
+| Part 2 §8, page 4: display memory traces | Persistent Chat History shows timestamps and turn IDs; explicit recall tool produces referenced excerpts; selected-patient deletion control. |
+
+`ConversationRepository` enforces both requester/subject isolation and medical access.
+Retrieval combines recent continuity with keyword-related older turns, with bounded
+prompt sizes. `conversation_recall` is a validated patient-scoped plan tool. Historical
+conversation output is labelled and excluded from clinical-summary FAISS indexing.
+A memory-conditioned plan cannot change subjects; such changes fall back to the
+original plan without memory. Current medical facts continue to come from the EHR,
+not recalled dialogue. No booking is executed merely because it appears in memory.
+
+### Closed implementation gap: conversational context in active medical RAG
+
+Notebook Step 11 initializes `ConversationBufferMemory` but does not provide the
+complete wiring to retrieval. BRD Part 1 §3 calls for memory lookups in task prompts.
+The application implements equivalent bounded, persistent context using its existing
+SQLite conversation repository rather than adding a second session-only memory store.
+
+Execution now routes medical questions through `answer_patient_question`, which loads
+authorized subject-scoped dialogue. The history-aware RAG path resolves follow-ups
+into standalone questions with the existing OpenAI planning client, then runs reference
+retrieval and answer generation while preserving sources. Ambiguity requests clarification.
+Conversation text is not treated as clinical evidence. Authorization is rechecked after
+external calls and final summarization; revoked contextual results and sources are
+withheld. Streamlit tracks the contextual subject even when no EHR snapshot was read.
+
+### Task-specific prompts and chaining — verified against BRD §3 and notebook Steps 9/14
+
+Notebook Step 9 defines a healthcare `PromptTemplate(context, question)` restricted
+to supplied context. Step 14 formats it with retrieved text and a medical question.
+The reference RAG chain now explicitly injects the application's healthcare chat
+prompt into `RetrievalQA` rather than accepting the library default. System rules
+are separate from retrieved document/question data; empty source sets produce a
+controlled insufficient-reference answer. Source documents remain available to UI.
+
+Other required prompts were already implemented: structured planning and action
+parameters, evidence-only clinical-history summarization with source validation,
+live-search summarization, and memory-based standalone-question resolution.
+Action extraction and final operational summarization now have named prompt constants
+in `src/llm/task_prompts.py`; the planner composes action rules into its one structured
+request. Chaining remains dependency-validated by `PlanExecution`, with authorization
+and appointment confirmation enforced in application code. Prompt requirements and
+file-to-stage mapping are documented in the README. Integration tests run the real
+LangChain composition with offline retrieval/model fixtures, not merely prompt string
+checks. Live model quality and clinical accuracy require separate evaluation.
+
+### Implemented: integrated document ingestion — notebook Steps 3–8
+
+| Notebook stage | Application implementation |
+| --- | --- |
+| 3: upload | Staff reference-document panel or `python -m scripts.ingest_documents` |
+| 4: PDF loading | `PDFLoader.load_pages`, preserving page provenance and validating input |
+| 5: splitting | Existing `TextProcessor` with configured chunk size/overlap, applied per page |
+| 6: embeddings | OpenAI through `EmbeddingManager`, matching the user's chosen model provider |
+| 7: FAISS | Shared reference `FAISSStore`; native index + JSON documents/manifest committed atomically in SQLite |
+| 8: search | UI/CLI preview and existing `GoalExecution.answer_question` RAG retriever |
+
+The ingestion pipeline skips duplicates by SHA-256, appends new content, reports
+partial multi-file success and per-file errors, preserves source/page/chunk metadata,
+and leaves the previously committed index intact on embedding/save failures. It
+rejects oversized, encrypted, malformed and textless PDFs. OCR remains outside scope.
+Only authenticated staff see the shared-library upload UI; patient clinical records
+and patient summary vectors remain in their separate storage workflows.
+
+Legacy public `index.pkl` persistence is replaced with JSON metadata plus native FAISS
+bytes in `references.sqlite`, avoiding pickle deserialization. Existing source PDFs
+must be re-ingested; old index files are not deleted or implicitly migrated. The RAG
+adapter still exposes the same LangChain FAISS retriever interface. Tests verify the
+PDF-to-search path, duplicate behavior, rollback, persistence across instances,
+CLI exit status, role-gated UI callbacks, and page metadata without paid API calls.
+
+### Source evidence audit and completion — notebook Steps 9, 14, 16
+
+The reported missing `return_source_documents` flag was already fixed: reference
+`RetrievalQA` enables it and history-aware retrieval preserves sources. The remaining
+presentation/chaining issue is now addressed: successful reference answers bypass
+an unsupported second LLM rewrite, the executor appends deterministic source/page
+labels, and the UI shows matching labels with plain-text excerpts. Structured
+`reference_evidence` accompanies the original `source_documents` in execution results.
+Missing metadata is explicit, and revoked contextual evidence is removed before
+rendering. Tests cover execution-to-final-answer evidence, the source panel, empty
+sources, metadata gaps, and revocation; existing real LangChain tests verify retrieval
+returns actual source documents. Retrieval provenance supports manual faithfulness
+inspection but is not automated entailment validation or claim-level citation scoring.
+
+### Implemented: measured model evaluation — BRD §6 / notebook Step 16
+
+A nine-case versioned synthetic benchmark supplies controlled evidence, expected
+answers and explicit rubrics for reference QA, clinical-history summaries and
+publication summaries. A structured OpenAI judge evaluates accuracy, relevance,
+faithfulness and unsupported claims; this serves as the BRD's QAEvalChain-equivalent
+reference-based evaluator. Production prompts and summary validators/renderers generate
+candidates. Reference QA is evaluated at its prompt boundary with fixed evidence;
+retrieval and tool planning are not included in these quality scores.
+
+The CLI records per-case generation/grading status, answer, evidence, reference answer,
+judge rationale, unsupported claims, and separate generation/judge/total latency.
+Aggregate and per-task metrics report denominators and null scores when no case is
+graded. Known-positive/negative judge controls are excluded from aggregate scores.
+Dataset/prompt hashes, model names and settings identify the benchmark configuration.
+Reports are atomically persisted and surfaced in a staff dashboard, with observed tool
+outcomes separately aggregated from existing logs. Failed runs cannot masquerade as
+perfect quality. A live OpenAI baseline report is included; it is synthetic regression
+evidence, not clinician validation or an estimate of real-world medical accuracy.
+
+### Implemented: performance analysis dashboard — BRD §§6–7
+
+`PerformanceRepository` aggregates privacy-preserving telemetry for a selected UTC
+window. Actual booking-confirmation events supply booking rates and outcome/latency
+trends; appointment-discovery proposals are excluded from the booking denominator.
+Successful confirmations win over repeated outcomes for the same scoped request,
+otherwise the latest outcome is retained. Deduplication precedes date filtering.
+Remote uncertain outcomes remain explicit and can be resolved by successful retries.
+All booking calls now emit an outcome, including exceptions and missing caller-supplied
+request IDs; telemetry failures do not alter the booking result. Historical missing
+telemetry is not backfilled or represented as measured data.
+
+The staff dashboard renders Vega-Lite JSON charts for booking rates/counts/outcomes,
+per-tool success distributions and mean/p95 latencies. Aggregate downloads contain
+no patient identifiers. The evaluation panel charts measured synthetic benchmark
+quality and latency separately, with completion counts and judge controls visible.
+Empty booking denominators render N/A; ungraded quality scores remain null. Tests
+exercise actual SQLite aggregation, recording paths and UI chart specifications.
+
+### Implemented: automatic appointment tracking — BRD §7
+
+`app/live_appointments_view.py` owns the read-only tracking fragment, scheduled with
+`st.fragment(run_every=APPOINTMENT_REFRESH_SECONDS)` (default five seconds). The
+patient booking form and doctor calendar editor remain outside the fragment so timer
+reruns cannot trigger mutations or LLM calls. Every refresh derives identity and
+selected patient/date from current session state, reloads the active profile, reads
+fresh database rows, and rechecks authorization. Failed/denied refreshes render no
+stale table. A last-successful-read timestamp makes freshness visible; manual refresh
+is also available. Streamlit is upgraded to 1.55.0, with no additional timer component.
+
+This provides near-real-time cross-session visibility for app instances sharing the
+SQLite appointment database. It is polling rather than push, and does not replicate
+remote standalone databases. Existing booking-time availability checks remain the
+source of truth for stale proposals. Unit and real Streamlit AppTest coverage verify
+fresh reads, status updates, identity/permission changes and fragment isolation;
+wall-clock browser timer behavior is not simulated by AppTest.
+
+### Implemented: BRD §8 memory traces and interactive scenarios
+
+`ConversationFlow` and patient-question/recall execution now expose observable memory
+provenance from actual scoped retrieval: turn IDs, timestamps, retrieval reasons,
+truncation and supplied character counts. Discarded subject-changing plans are labelled.
+`Plan.details()` exposes explicit task inputs and arguments, while `PlanExecution`
+records per-subgoal dependencies, blocked-by IDs and durations. General event logs
+remain redacted; the new protected `request_traces` table stores detailed plans and
+provenance behind requester/subject authorization. Referenced dialogue is resolved on
+demand from its original store, so deleted/revoked memory is not copied back from traces.
+
+The patient trace panel shows request selection, detailed subgoal outcomes and explicit
+dependency edges. A separate scenario interface is available to signed-in roles: real
+planning/execution runs against temporary synthetic SQLite data and local calendars,
+with disclosed fixture reference/search/summary behavior. Expected subgoals and outcome
+checks distinguish a permission-denial test passing from a real access grant. Scenario
+execution never writes production records, books real appointments or uses a configured
+remote schedule backend. A CLI persists live scenario reports, including failed checks.
+This supplements the model-quality benchmark without claiming clinical evaluation or
+revealing private model reasoning.

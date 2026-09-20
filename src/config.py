@@ -24,6 +24,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
+# Dedicated model supporting strict JSON-schema output for planning.
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "gpt-4o-mini")
+
 # Vector Database Configuration
 CHROMADB_PATH = os.getenv("CHROMADB_PATH", str(EMBEDDINGS_DIR / "chromadb"))
 FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", str(EMBEDDINGS_DIR / "faiss"))
@@ -42,3 +45,21 @@ STREAMLIT_SERVER_PORT = int(os.getenv("STREAMLIT_SERVER_PORT", "8501"))
 
 # Model Parameters
 EMBEDDING_MODEL = "text-embedding-ada-002"
+
+# Calendar times and optional private Doctor Schedule HTTP service
+SCHEDULE_TIMEZONE = os.getenv("SCHEDULE_TIMEZONE", "Australia/Sydney")
+SCHEDULE_API_URL = os.getenv("SCHEDULE_API_URL", "")
+SCHEDULE_API_TOKEN = os.getenv("SCHEDULE_API_TOKEN", "")
+
+# Live medical publication search (PubMed works without a key at low request rates)
+NCBI_EMAIL = os.getenv("NCBI_EMAIL", "")
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")
+MEDICAL_SEARCH_DAYS = int(os.getenv("MEDICAL_SEARCH_DAYS", "730"))
+
+# Separate from the public document embedding configuration.
+PATIENT_SUMMARY_EMBEDDING_MODEL = os.getenv('PATIENT_SUMMARY_EMBEDDING_MODEL', 'text-embedding-3-small')
+
+# Independent read-only appointment panel polling.
+APPOINTMENT_REFRESH_SECONDS = int(os.getenv('APPOINTMENT_REFRESH_SECONDS', '5'))
+if not 2 <= APPOINTMENT_REFRESH_SECONDS <= 60:
+    raise ValueError('APPOINTMENT_REFRESH_SECONDS must be between 2 and 60.')

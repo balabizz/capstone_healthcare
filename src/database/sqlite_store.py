@@ -40,6 +40,25 @@ class SQLiteStore:
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS patient_dependents (
+                    dependent_id TEXT PRIMARY KEY,
+                    patient_id TEXT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    relationship TEXT NOT NULL CHECK (relationship IN
+                        ('father', 'mother', 'spouse', 'child', 'sibling', 'guardian', 'other')),
+                    dependent_patient_id TEXT REFERENCES patients(patient_id) ON DELETE RESTRICT,
+                    CHECK (patient_id != dependent_patient_id),
+                    UNIQUE (patient_id, dependent_patient_id, relationship)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dependents_owner ON patient_dependents(patient_id);
+                CREATE TABLE IF NOT EXISTS dependent_permissions (
+                    subject_patient_id TEXT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+                    requester_patient_id TEXT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+                    permission TEXT NOT NULL CHECK (permission IN
+                        ('view_appointments', 'book_appointment', 'view_medical')),
+                    PRIMARY KEY (subject_patient_id, requester_patient_id, permission)
+                );
+
                 CREATE TABLE IF NOT EXISTS doctors (
                     doctor_id TEXT PRIMARY KEY,
                     first_name TEXT,
@@ -95,6 +114,27 @@ class SQLiteStore:
                         ON UPDATE CASCADE ON DELETE RESTRICT,
                     FOREIGN KEY (doctor_id) REFERENCES doctors (doctor_id)
                         ON UPDATE CASCADE ON DELETE RESTRICT
+                );
+
+                CREATE TABLE IF NOT EXISTS doctor_working_hours (
+                    window_id INTEGER PRIMARY KEY,
+                    doctor_id TEXT NOT NULL REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+                    weekday INTEGER NOT NULL CHECK(weekday BETWEEN 0 AND 6),
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    UNIQUE(doctor_id, weekday, start_time, end_time)
+                );
+                CREATE TABLE IF NOT EXISTS doctor_days_off (
+                    doctor_id TEXT NOT NULL REFERENCES doctors(doctor_id) ON DELETE CASCADE,
+                    day TEXT NOT NULL,
+                    PRIMARY KEY(doctor_id, day)
+                );
+                CREATE TABLE IF NOT EXISTS booking_requests (
+                    requester_patient_id TEXT NOT NULL REFERENCES patients(patient_id),
+                    request_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    appointment_id TEXT NOT NULL REFERENCES appointments(appointment_id),
+                    PRIMARY KEY(requester_patient_id, request_key)
                 );
 
                 CREATE TABLE IF NOT EXISTS medical_history (
@@ -180,6 +220,9 @@ class SQLiteStore:
                     ON agent_events (patient_id, created_at);
                 """
             )
+
+            from src.database.medical_records_migration import migrate
+            migrate(connection)
 
     def save_patient(self, patient: PatientVO) -> PatientVO:
         """Insert or update a patient record and return the stored value object."""

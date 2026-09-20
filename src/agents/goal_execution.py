@@ -6,11 +6,12 @@ from time import perf_counter
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from src.config import SQLITE_DB_PATH
+from src.config import SQLITE_DB_PATH, SCHEDULE_API_URL, SCHEDULE_API_TOKEN
 from src.database.sqlite_store import SQLiteStore
 from src.models.patient_vo import PatientVO
 from src.agents.planner import Goal
 from src.repositories.agent_event_repository import AgentEventRepository
+from src.repositories.dependent_repository import DependentRepository
 
 
 APPOINTMENT_SLOTS = [
@@ -30,10 +31,43 @@ class GoalExecution:
         self.database_path = database_path
         SQLiteStore(database_path)
         self.events = AgentEventRepository(database_path)
+        self.dependents = DependentRepository(database_path)
+        from src.repositories.medical_record_repository import MedicalRecordRepository
+        self.medical_records = MedicalRecordRepository(database_path)
+        from src.repositories.patient_history_repository import PatientHistoryRepository
+        self.patient_history = PatientHistoryRepository(database_path)
+        from src.tools.medical_search import MedicalSearch
+        self.medical_search = MedicalSearch()
+        from src.repositories.schedule_repository import ScheduleRepository
+        self.calendars = ScheduleRepository(database_path)
+        self.schedule = self.calendars
+        if SCHEDULE_API_URL:
+            from src.scheduling.client import ScheduleAPIClient
+            self.schedule = ScheduleAPIClient(SCHEDULE_API_URL, SCHEDULE_API_TOKEN)
+
+    @property
+    def request_traces(self):
+        from src.repositories.request_trace_repository import RequestTraceRepository
+        return RequestTraceRepository(self.patient_history)
+
+    @property
+    def conversations(self):
+        from src.repositories.conversation_repository import ConversationRepository
+        if not hasattr(self, '_conversations'):
+            self._conversations = ConversationRepository(self.patient_history)
+        return self._conversations
+
+    @property
+    def patient_summaries(self):
+        from src.vector_store.patient_summaries import PatientSummaryStore
+        if not hasattr(self, '_patient_summaries'):
+            self._patient_summaries = PatientSummaryStore(self.patient_history)
+        return self._patient_summaries
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def execute(
@@ -42,6 +76,7 @@ class GoalExecution:
         *,
         request_id: Optional[str] = None,
         patient_id: Optional[str] = None,
+        dependent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute one planned goal and return its result."""
         started_at = perf_counter()
@@ -55,12 +90,21 @@ class GoalExecution:
                 event_type="goal_started", tool_name=tool_name, status="started",
             )
         try:
+            subject_id = patient_id
+            if goal.relationship or dependent_id:
+                if not patient_id:
+                    raise ValueError("Sign in as a patient to enquire about family members.")
+                subject_id = self.dependents.resolve(patient_id, goal.relationship, dependent_id)
+                self.dependents.require_access(patient_id, subject_id,
+                    "book_appointment" if goal.name == "appointment" else "view_medical")
             if goal.name == "medical_question":
-                result = self.answer_question(goal.input_text)
+                result = self.answer_patient_question(goal.input_text, requester_patient_id=patient_id, patient_id=subject_id)
             elif goal.name == "appointment":
                 result = {
                     "goal": goal.name,
-                    "message": "Use the appointment view to schedule.",
+                    "answer": "Use the appointment view to schedule for the selected patient.",
+                    "source_documents": [],
+                    "subject_patient_id": subject_id,
                 }
             else:
                 raise ValueError(f"Unsupported goal: {goal.name}")
@@ -84,32 +128,56 @@ class GoalExecution:
             )
         return result
 
-    def answer_question(self, question: str) -> Dict[str, Any]:
+    def answer_patient_question(self, question, *, requester_patient_id=None, patient_id=None):
+        """Fetch authorized dialogue at execution time, never accept a model-supplied scope."""
+        if not requester_patient_id:
+            return self.answer_question(question)
+        patient_id = patient_id or requester_patient_id
+        def check_access():
+            self.patient_history.require_access(requester_patient_id, patient_id)
+        check_access()
+        history = self.conversations.retrieve(requester_patient_id, patient_id, question)
+        result = (self.answer_question(question, chat_history=history, check_access=check_access)
+                  if history else self.answer_question(question))
+        check_access()
+        # Even with no dialogue, a family-scoped query may contain personal information.
+        from src.agents.memory_trace import memory_trace
+        result['memory_trace'] = memory_trace('medical_question_context',history)
+        result['context_subject_patient_id'] = patient_id
+        return result
+
+    def answer_question(self, question: str, *, chat_history=None, check_access=None) -> Dict[str, Any]:
         """Answer a medical question using the FAISS-backed RAG chain."""
         from src.chains.rag_chain import RAGChain
-        from src.llm.llm_client import LLMClient
         from src.vector_store.faiss_store import FAISSStore
 
-        LLMClient()
         vectorstore = FAISSStore().load_store()
-        result = RAGChain(vectorstore).query(question)
+        chain = RAGChain(vectorstore)
+        result = (chain.query_with_history(question, chat_history, check_access=check_access)
+                  if chat_history else chain.query(question))
         return result
 
     def authenticate_user(self, username: str, password: str, user_type: str) -> bool:
         """Return whether credentials match an active login record."""
+        from src.utils.passwords import verify_password
+        if user_type not in ('patient', 'doctor', 'attendant'):
+            return False
         with self._connect() as connection:
             record = connection.execute(
-                """
-                SELECT 1 FROM login_details
-                WHERE username = ? AND password_hash = ?
-                  AND user_type = ? AND is_active = 1
-                """,
-                (username.strip().lower(), password, user_type),
-            ).fetchone()
-        return record is not None
+                'SELECT password_hash FROM login_details WHERE username=? AND user_type=? AND is_active=1',
+                (username.strip().lower(), user_type)).fetchone()
+        return bool(record and verify_password(password, record['password_hash'], allow_legacy=user_type != 'attendant'))
 
     def get_user_profile(self, username: str, user_type: str) -> Optional[dict]:
         """Retrieve the profile linked to an authenticated login."""
+        username = username.strip().lower()
+        if user_type == 'attendant':
+            with self._connect() as connection:
+                row = connection.execute("SELECT a.* FROM attendants a JOIN login_details l ON l.attendant_id=a.attendant_id "
+                    "WHERE l.username=? AND l.user_type='attendant' AND l.is_active=1", (username,)).fetchone()
+            return dict(row) if row else None
+        if user_type not in ('patient', 'doctor'):
+            return None
         with self._connect() as connection:
             if user_type == "patient":
                 row = connection.execute(
@@ -148,23 +216,16 @@ class GoalExecution:
 
     def get_available_doctors(self, speciality: Optional[str], appointment_date: date, slot: str) -> List[dict]:
         """Return free doctors for a specialty and appointment slot."""
-        appointment_datetime = f"{appointment_date.isoformat()} {slot}"
+        # Legacy manual selector now respects each doctor's working calendar.
+        doctors = self.schedule.specialists(speciality)
         with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT d.doctor_id, d.first_name, d.last_name, d.speciality
-                FROM doctors AS d
-                WHERE (? IS NULL OR d.speciality = ?)
-                  AND NOT EXISTS (
-                    SELECT 1 FROM appointments AS a
-                    WHERE a.doctor_id = d.doctor_id
-                      AND a.appointment_datetime = ? AND a.status = 'scheduled'
-                  )
-                ORDER BY d.last_name, d.first_name
-                """,
-                (speciality, speciality, appointment_datetime),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            return [doctor for doctor in doctors if self.calendars._allowed(
+                connection, doctor["doctor_id"], None, appointment_date, slot)]
+
+    def discover_appointments(self, patient_id, *, requester_patient_id=None, **preferences):
+        """Discover earliest matching slots through the configured schedule backend."""
+        return self.schedule.discover(patient_id=patient_id,
+            requester_patient_id=requester_patient_id or patient_id, **preferences)
 
     def book_appointment(
         self,
@@ -175,40 +236,44 @@ class GoalExecution:
         reason: str,
         *,
         request_id: Optional[str] = None,
+        requester_patient_id: Optional[str] = None,
     ) -> bool:
         """Book an available 30-minute appointment slot."""
         started_at = perf_counter()
-        if slot not in APPOINTMENT_SLOTS:
-            raise ValueError("Appointment time must be within the available hours")
-        appointment_datetime = f"{appointment_date.isoformat()} {slot}"
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO appointments (appointment_id, patient_id, doctor_id, appointment_datetime, reason)
-                SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
-                    SELECT 1 FROM appointments
-                    WHERE doctor_id = ? AND appointment_datetime = ? AND status = 'scheduled'
-                )
-                """,
-                (f"appointment-{uuid4().hex}", patient_id, doctor_id,
-                 appointment_datetime, reason.strip() or None, doctor_id, appointment_datetime),
-            )
-            booked = connection.total_changes == 1
-        if request_id:
-            self.events.log(
-                request_id=request_id,
-                patient_id=patient_id,
-                goal_id="book_appointment",
-                event_type="appointment_booking_completed",
-                tool_name="appointments.book",
-                status="success" if booked else "slot_unavailable",
-                duration_ms=round((perf_counter() - started_at) * 1000),
-                details={"doctor_id": doctor_id, "appointment_date": appointment_date.isoformat()},
-            )
-        return booked
+        request_id = request_id or f"request-{uuid4().hex}"
+        requester = requester_patient_id or patient_id
+        status, replayed = 'failed', False
+        try:
+            self.dependents.require_access(requester, patient_id, "book_appointment")
+            result = self.schedule.book(
+                requester_patient_id=requester, patient_id=patient_id, doctor_id=doctor_id,
+                day=appointment_date.isoformat(), slot=slot, reason=reason.strip(), idempotency_key=request_id)
+            booked = result["status"] == "booked"
+            replayed = bool(result.get('replayed',False))
+            status = 'success' if booked else 'slot_unavailable'
+            return booked
+        except PermissionError:
+            status = 'denied'
+            raise
+        except ValueError as error:
+            from src.scheduling.client import ScheduleUnavailable
+            status = 'outcome_unknown' if isinstance(error, ScheduleUnavailable) else 'invalid_request'
+            raise
+        finally:
+            try:
+                self.events.log(request_id=request_id, patient_id=patient_id,
+                    goal_id="book_appointment", event_type="appointment_booking_completed",
+                    tool_name="appointments.book", status=status,
+                    duration_ms=round((perf_counter()-started_at)*1000),
+                    details={'requester_patient_id':requester,'replayed':replayed})
+            except sqlite3.Error:
+                # Telemetry failure must not turn a confirmed booking into a reported failure.
+                import logging
+                logging.getLogger(__name__).warning('Booking telemetry could not be persisted.')
 
-    def get_patient_appointments(self, patient_id: str) -> List[dict]:
+    def get_patient_appointments(self, patient_id: str, *, requester_patient_id: Optional[str] = None) -> List[dict]:
         """Return a patient's scheduled appointments."""
+        self.dependents.require_access(requester_patient_id or patient_id, patient_id, "view_appointments")
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -219,6 +284,7 @@ class GoalExecution:
                 """,
                 (patient_id,),
             ).fetchall()
+        self.dependents.require_access(requester_patient_id or patient_id, patient_id, "view_appointments")
         return [dict(row) for row in rows]
 
     def get_doctor_schedule(self, doctor_id: str, schedule_date: date) -> List[dict]:

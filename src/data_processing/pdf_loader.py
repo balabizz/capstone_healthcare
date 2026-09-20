@@ -9,6 +9,33 @@ class PDFLoader:
     """Load and extract text from PDF documents."""
 
     @staticmethod
+    def load_pages(data, max_pages=200, max_characters=1000000):
+        """Extract uploaded PDF bytes while preserving 1-based page numbers."""
+        from io import BytesIO
+        if not data.startswith(b'%PDF-'):
+            raise ValueError('The file is not a PDF.')
+        try:
+            reader = PdfReader(BytesIO(data))
+            if reader.is_encrypted:
+                raise ValueError('Encrypted PDFs are not supported. Provide an unencrypted reference PDF.')
+            if len(reader.pages) > max_pages:
+                raise ValueError(f'PDF exceeds the {max_pages}-page limit.')
+            pages, total = [], 0
+            for number, page in enumerate(reader.pages, 1):
+                text = (page.extract_text() or '').strip()
+                total += len(text)
+                if total > max_characters:
+                    raise ValueError('PDF extracted text exceeds the ingestion limit.')
+                pages.append({'page': number, 'text': text})
+            if not any(p['text'] for p in pages):
+                raise ValueError('No readable text found. Scanned PDFs need OCR before ingestion.')
+            return pages
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError('Could not read this PDF. Check that it is valid and unencrypted.') from error
+
+    @staticmethod
     def load_pdf(file_path: str) -> str:
         """
         Load text content from a PDF file.
