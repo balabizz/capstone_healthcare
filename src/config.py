@@ -15,7 +15,7 @@ EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 NOTEBOOKS_DIR = PROJECT_ROOT / "notebooks"
 SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", str(DATA_DIR / "healthcare.db"))
 
-# Ensure directories exist
+# Ensure directories exist~
 for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, EMBEDDINGS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -28,16 +28,15 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 PLANNER_MODEL = os.getenv("PLANNER_MODEL", "gpt-4o-mini")
 
 # Vector Database Configuration
-CHROMADB_PATH = os.getenv("CHROMADB_PATH", str(EMBEDDINGS_DIR / "chromadb"))
 FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", str(EMBEDDINGS_DIR / "faiss"))
 
 # Document Processing Configuration
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 MAX_DOCUMENTS = int(os.getenv("MAX_DOCUMENTS", "1000"))
+REFERENCE_DOCUMENT_UPLOAD_ROLES = ("doctor", "attendant")
 
 # Application Settings
-DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 # Streamlit Settings
@@ -51,7 +50,9 @@ SCHEDULE_TIMEZONE = os.getenv("SCHEDULE_TIMEZONE", "Australia/Sydney")
 SCHEDULE_API_URL = os.getenv("SCHEDULE_API_URL", "")
 SCHEDULE_API_TOKEN = os.getenv("SCHEDULE_API_TOKEN", "")
 
-# Live medical publication search (PubMed works without a key at low request rates)
+# Live medical publication search currently uses WHO only.
+NCBI_BASE_URL = os.getenv("NCBI_BASE_URL", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils")
+WHO_PUBLICATIONS_URL = os.getenv("WHO_PUBLICATIONS_URL", "https://www.who.int/api/hubs/publications")
 NCBI_EMAIL = os.getenv("NCBI_EMAIL", "")
 NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")
 MEDICAL_SEARCH_DAYS = int(os.getenv("MEDICAL_SEARCH_DAYS", "730"))

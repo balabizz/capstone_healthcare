@@ -9,7 +9,7 @@ import re
 import xml.etree.ElementTree as ET
 import requests
 
-from src.config import NCBI_API_KEY, NCBI_EMAIL, MEDICAL_SEARCH_DAYS
+from src.config import NCBI_API_KEY, NCBI_BASE_URL, NCBI_EMAIL, MEDICAL_SEARCH_DAYS, WHO_PUBLICATIONS_URL
 
 _NCBI_LOCK = Lock()
 _NCBI_LAST = 0.0
@@ -99,7 +99,7 @@ class MedicalSearch:
             shared['email'] = NCBI_EMAIL
         if NCBI_API_KEY:
             shared['api_key'] = NCBI_API_KEY
-        search = json.loads(self._get('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi', {
+        search = json.loads(self._get(f'{NCBI_BASE_URL.rstrip("/")}/esearch.fcgi', {
             **shared, 'term': f'({query}) NOT ("Retracted Publication"[pt] OR "Retraction of Publication"[pt])',
             'retmode': 'json', 'retmax': self.limit, 'sort': 'pub_date', 'datetype': 'pdat',
             'mindate': first.strftime('%Y/%m/%d'), 'maxdate': last.strftime('%Y/%m/%d')}, ncbi=True))
@@ -112,7 +112,7 @@ class MedicalSearch:
         ids = ids[:self.limit]
         if not ids:
             return [], int(data['count'])
-        xml = self._get('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi',
+        xml = self._get(f'{NCBI_BASE_URL.rstrip("/")}/efetch.fcgi',
             {**shared, 'id': ','.join(ids), 'retmode': 'xml'}, ncbi=True)
         if b'<!ENTITY' in xml.upper():
             raise ProviderError('Unsupported XML entity declaration.')
@@ -159,7 +159,7 @@ class MedicalSearch:
             raise ValueError('Please specify a medical condition or topic.')
         clauses = [f"(contains(tolower(Title),'{term}') or contains(tolower(Overview),'{term}'))" for term in terms]
         dates = f'PublicationDateAndTime ge {first.isoformat()}T00:00:00Z and PublicationDateAndTime le {last.isoformat()}T23:59:59Z'
-        data = json.loads(self._get('https://www.who.int/api/hubs/publications', {
+        data = json.loads(self._get(WHO_PUBLICATIONS_URL, {
             '$filter': ' and '.join(clauses + [dates]), '$orderby': 'PublicationDateAndTime desc',
             '$top': self.limit, '$select': 'Id,Title,UrlName,Overview,Summary,PublicationDateAndTime', '$count': 'true'}))
         if not isinstance(data.get('value'), list):
@@ -182,18 +182,17 @@ class MedicalSearch:
         now = self.now()
         last, first = now.date(), now.date() - timedelta(days=self.days)
         sources, providers = [], []
-        for name, operation in (('PubMed', self._pubmed), ('WHO', self._who)):
-            try:
-                found, count = operation(query, first, last)
-                sources.extend(found)
-                providers.append({'provider': name, 'status': 'success' if found else 'no_results',
-                                  'returned': len(found), 'matching_count': count})
-            except (ProviderError, ValueError, KeyError, TypeError, ET.ParseError) as error:
-                providers.append({'provider': name, 'status': 'failed', 'returned': 0,
-                                  'error': str(error) if isinstance(error, ProviderError) else 'Provider returned malformed or unsupported data.'})
+        try:
+            found, count = self._who(query, first, last)
+            sources.extend(found)
+            providers.append({'provider': 'WHO', 'status': 'success' if found else 'no_results',
+                              'returned': len(found), 'matching_count': count})
+        except (ProviderError, ValueError, KeyError, TypeError, ET.ParseError) as error:
+            providers.append({'provider': 'WHO', 'status': 'failed', 'returned': 0,
+                              'error': str(error) if isinstance(error, ProviderError) else 'Provider returned malformed or unsupported data.'})
         unique = {s['id']: s for s in sources}
         failures = sum(p['status'] == 'failed' for p in providers)
-        status = 'failed' if failures == len(providers) else 'partial' if failures else 'success' if unique else 'no_results'
+        status = 'failed' if failures else 'success' if unique else 'no_results'
         return {'status': status, 'query': query, 'searched_at': now.isoformat(),
                 'date_from': first.isoformat(), 'date_to': last.isoformat(),
                 'providers': providers, 'sources': list(unique.values())}

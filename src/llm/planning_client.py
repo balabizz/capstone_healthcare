@@ -80,15 +80,31 @@ class PlanningClient:
                 parts.append('Past conversation excerpts (historical dialogue, not verified current clinical facts):\n' +
                     ('\n\n'.join(f"{r['created_at']} [turn:{r['turn_id']}]\nYou: {r['query']}\nAssistant: {r['answer']}" for r in memory)
                      if memory else 'No saved conversations were found for this patient and account.'))
-            if history is not None:
-                self.last_history_summary = self.summarize_history(history)
-                parts.append(self.last_history_summary)
-            if search is not None:
-                parts.append('Current medical publication search:\n' + self.summarize_medical_search(search))
             other = [r for r in evidence if r['goal'] not in ('patient_lookup', 'history_retrieval', 'medical_search', 'conversation_recall')]
             if other:
-                parts.append('Other requested tasks:\n' + '\n'.join(
-                    f"- {r['goal'].replace('_', ' ')} ({r['status']}): {r['message']}" for r in other))
+                if len(other) == 1 and other[0]['goal'] == 'medical_question':
+                    parts.append(other[0]['message'])
+                else:
+                    parts.append('Other requested tasks:\n' + '\n'.join(
+                        f"- {r['goal'].replace('_', ' ')} ({r['status']}): {r['message']}" for r in other))
+            if history is not None:
+                has_history_entries = any(history.get(key) for key in ('records', 'prescriptions', 'alerts'))
+                if not has_history_entries:
+                    if {'retrieved_at', 'coverage'}.issubset(history):
+                        from src.llm.history_summary import coverage_notice
+                        parts.append('No clinical history entries were recorded in the authorized snapshot.\n' + coverage_notice(history))
+                    else:
+                        parts.append('No clinical history summary was available for this request.')
+                else:
+                    try:
+                        self.last_history_summary = self.summarize_history(history)
+                        parts.append(self.last_history_summary)
+                    except Exception:
+                        from src.llm.history_summary import coverage_notice
+                        parts.append('Patient history was retrieved but could not be summarized by the model. '
+                                     'Review the authorized history source records.\n' + coverage_notice(history))
+            if search is not None:
+                parts.append('Current medical publication search:\n' + self.summarize_medical_search(search))
             return '\n\n'.join(parts)
         if any(r['goal'] == 'medical_question' and r['status'] == 'success' for r in evidence):
             # Preserve the reference answer: a second model has no retrieved excerpts

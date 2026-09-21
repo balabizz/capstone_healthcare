@@ -18,3 +18,9 @@ Doctor test account
 Username: testdoctor
 Password: doctor
 User type: doctor
+
+
+| Username | Password |
+|---|---|
+| `attendant.one` | `9029kE7rozE14Zz0ffJl` |
+| `attendant.two` | `kUi3Q3tAH1ezfqaEth-0` |

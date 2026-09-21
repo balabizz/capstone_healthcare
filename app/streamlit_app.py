@@ -2,7 +2,7 @@
 
 import sys
 import sqlite3
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -60,115 +60,6 @@ def render_family(profile, execution):
                     st.error("Enter a valid registered patient ID.")
 
 
-def render_appointment_view(
-    profile: dict, user_type: str, goal_execution: GoalExecution
-) -> None:
-    """Render patient booking or doctor daily schedule."""
-    if st.button("Back to Medical Assistant", key="back_to_assistant"):
-        st.session_state.appointment_view = False
-        st.rerun()
-
-    st.header("Appointment View")
-    if st.session_state.get("booking_information"):
-        st.write(st.session_state.pop("booking_information"))
-    if user_type == "patient":
-        subject_id = profile["patient_id"]
-        selected = st.session_state.get("selected_dependent")
-        if selected:
-            try:
-                subject_id = goal_execution.dependents.resolve(subject_id, dependent_id=selected)
-            except (ValueError, PermissionError) as error:
-                st.warning(str(error))
-                return
-        st.caption(f"Appointments for patient: {subject_id}")
-        st.subheader("Find an appointment")
-        st.caption(f"30-minute appointments · {goal_execution.calendars.zone}")
-        today = goal_execution.calendars.now().date()
-        specialties = goal_execution.get_specialties()
-        speciality_choice = st.selectbox("Speciality preference", ["Any speciality"] + specialties,
-                                         key="patient_speciality")
-        start_day = st.date_input("From date", value=today, min_value=today)
-        end_day = st.date_input("Through date", value=today + timedelta(days=29), min_value=today)
-        period = st.selectbox("Preferred time", ["Any time", "Morning", "Afternoon"])
-        if st.button("Find earliest appointments"):
-            bounds = {"Any time": (None, None), "Morning": ("09:00", "12:00"), "Afternoon": ("12:00", "17:00")}[period]
-            try:
-                slots = goal_execution.discover_appointments(subject_id,
-                    requester_patient_id=profile["patient_id"],
-                    specialty=None if speciality_choice == "Any speciality" else speciality_choice,
-                    date_from=start_day.isoformat(), date_to=end_day.isoformat(),
-                    time_from=bounds[0], time_to=bounds[1])
-                st.session_state.suggested_slots = {"subject_patient_id": subject_id, "slots": slots}
-            except (ValueError, PermissionError) as error:
-                st.warning(str(error))
-        suggestion = st.session_state.get("suggested_slots") or {}
-        if suggestion.get("subject_patient_id") == subject_id:
-            slots = suggestion["slots"]
-            if not slots:
-                st.info("No matching appointments. Try another date range or specialty.")
-            else:
-                selected_slot = st.selectbox("Suggested appointments (earliest first)", range(len(slots)),
-                    format_func=lambda i: f"{slots[i]['date']} {slots[i]['time']} {slots[i]['timezone']} — "
-                        f"Dr. {slots[i]['first_name']} {slots[i]['last_name']} ({slots[i]['speciality']})")
-                chosen = slots[selected_slot]
-                reason = st.text_input("Reason for visit", key="appointment_reason")
-                signature = (subject_id, chosen['doctor_id'], chosen['date'], chosen['time'], reason)
-                keys = st.session_state.setdefault('booking_request_keys', {})
-                request_key = keys.setdefault(signature, f"request-{uuid4().hex}")
-                if st.button("Confirm and book appointment"):
-                    try:
-                        booked = goal_execution.book_appointment(subject_id, chosen['doctor_id'],
-                            date.fromisoformat(chosen['date']), chosen['time'], reason,
-                            requester_patient_id=profile['patient_id'], request_id=request_key)
-                        if booked:
-                            st.session_state.suggested_slots = None
-                            st.session_state.booking_success = "Appointment booked successfully."
-                            st.rerun()
-                        else:
-                            st.warning("That slot is no longer available. Find appointments again.")
-                    except (ValueError, PermissionError) as error:
-                        st.warning(str(error))
-        if st.session_state.get("booking_success"):
-            st.success(st.session_state.pop("booking_success"))
-
-        from app.live_appointments_view import render_live_appointments
-        render_live_appointments(goal_execution)
-    else:
-        with st.expander("My working calendar"):
-            st.caption(f"All times use {goal_execution.calendars.zone}; existing appointments remain when hours change.")
-            hours = goal_execution.calendars.list_hours(profile['doctor_id'])
-            if hours:
-                st.dataframe(hours, hide_index=True)
-                remove = st.selectbox("Working window to remove", [row['window_id'] for row in hours])
-                if st.button("Remove working window"):
-                    goal_execution.calendars.remove_hours(profile['doctor_id'], remove)
-                    st.rerun()
-            with st.form("working_hours"):
-                weekday = st.selectbox("Weekday", range(7), format_func=lambda d: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][d])
-                start_time = st.text_input("Start time (HH:MM)", "09:00")
-                end_time = st.text_input("End time (HH:MM)", "12:00")
-                if st.form_submit_button("Add working hours"):
-                    try:
-                        goal_execution.calendars.set_hours(profile['doctor_id'], weekday, start_time, end_time)
-                        st.rerun()
-                    except ValueError as error:
-                        st.warning(str(error))
-            days_off = goal_execution.calendars.list_days_off(profile["doctor_id"])
-            if days_off:
-                st.write("Days off: " + ", ".join(days_off))
-            with st.form("day_off"):
-                off_day = st.date_input("Day off", min_value=goal_execution.calendars.now().date())
-                enabled = st.checkbox("Unavailable all day", value=True)
-                if st.form_submit_button("Save day off"):
-                    goal_execution.calendars.set_day_off(profile['doctor_id'], off_day.isoformat(), enabled)
-                    st.success("Calendar updated.")
-        schedule_date = st.date_input(
-            "Schedule date", value=date.today(), key="doctor_schedule_date"
-        )
-        from app.live_appointments_view import render_live_appointments
-        render_live_appointments(goal_execution)
-
-
 def main():
     """Run the Streamlit application."""
     goal_execution = GoalExecution()
@@ -184,9 +75,6 @@ def main():
         st.session_state.chat_history = []
     if "authenticated_user" not in st.session_state:
         st.session_state.authenticated_user = None
-    if "appointment_view" not in st.session_state:
-        st.session_state.appointment_view = False
-
     if st.session_state.authenticated_user is None:
         st.title("🏥 Agentic Healthcare Assistant")
         st.subheader("Log in to continue")
@@ -239,17 +127,13 @@ def main():
             st.write(f"**Name:** {profile['first_name']} {profile['last_name']}")
             st.write(f"**Attendant ID:** {profile['attendant_id']}")
 
-        st.divider()
-        if authenticated_user["user_type"] != "attendant" and st.button("Appointment View", key="appointment_view_button", use_container_width=True):
-            st.session_state.appointment_view = True
-            st.rerun()
-
         if st.button("Sign out", key="signout", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
     if authenticated_user['user_type'] in ('doctor', 'attendant'):
-        from app.document_ingestion_view import render_document_ingestion
+        from app.document_ingestion_view import render_document_ingestion, render_patient_documents
+        render_patient_documents(authenticated_user['username'], goal_execution.database_path)
         render_document_ingestion(authenticated_user['user_type'])
         from app.evaluation_view import render_model_evaluation
         render_model_evaluation(authenticated_user['user_type'], goal_execution)
@@ -267,10 +151,6 @@ def main():
         render_family(profile, goal_execution)
         from app.patient_summary_view import render_patient_summary_search
         render_patient_summary_search(profile, goal_execution)
-
-    if st.session_state.appointment_view:
-        render_appointment_view(profile, authenticated_user["user_type"], goal_execution)
-        return
 
     memory_subject = None
     if authenticated_user['user_type'] == 'patient':
@@ -343,17 +223,20 @@ def main():
                 st.caption(f"Published: {source['published'] or 'not supplied'} · {source['evidence_type']}")
                 st.write(source['excerpt'] or 'No abstract/overview supplied; metadata only.')
     proposal = st.session_state.get("booking_proposal")
-    if proposal and st.button("Continue to appointment booking"):
-        subject = proposal["subject_patient_id"]
-        relatives = goal_execution.dependents.list_dependents(profile["patient_id"])
-        match = next((r for r in relatives if r["dependent_patient_id"] == subject), None)
-        st.session_state.pending_family = (f"{match['name']} ({match['relationship']}) [{match['dependent_id']}]"
-                                          if match else "Myself")
-        st.session_state.patient_speciality = proposal["specialty"]
-        st.session_state.suggested_slots = proposal
-        st.session_state.booking_proposal = None
-        st.session_state.appointment_view = True
-        st.rerun()
+    if proposal:
+        appointment = proposal.get("slot")
+        if proposal.get("status") == "booked" and appointment:
+            st.success(
+                f"Appointment booked for {appointment['date']} at {appointment['time']} "
+                f"({appointment['timezone']}) with Dr. {appointment['first_name']} "
+                f"{appointment['last_name']} ({appointment['speciality']})."
+            )
+            st.dataframe([{
+                "Date": appointment["date"], "Time": appointment["time"],
+                "Doctor": f"Dr. {appointment['first_name']} {appointment['last_name']}",
+                "Specialty": appointment["speciality"], "Timezone": appointment["timezone"],
+                "Duration": f"{appointment['duration_minutes']} minutes",
+            }], hide_index=True, use_container_width=True)
 
     col1, col2 = st.columns([2, 1])
 
@@ -416,7 +299,8 @@ def main():
                             patient_id=profile.get("patient_id"),
                             event_type="request_failed",
                             status="failed",
-                            details={"error_type": type(error).__name__},
+                            details={"error_type": type(error).__name__,
+                                     "error_message": str(error)[:300] if isinstance(error, (ValueError, PermissionError)) else "request failed"},
                         )
                         st.error(str(error) if isinstance(error, (ValueError, PermissionError)) else "The request could not be completed. Please try again.")
                         return

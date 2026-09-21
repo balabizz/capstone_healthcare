@@ -48,7 +48,8 @@ def test_persisted_followup_reaches_active_rag_after_restart(service, monkeypatc
     chain.chain.assert_called_once_with({'query': 'What are the complications of diabetes?'})
     assert result['source_documents'] == ['reference source']
     assert result['context_subject_patient_id'] == 'caller'
-    assert result['answer'] == 'Grounded reference answer'
+    assert result['answer'].startswith('Grounded reference answer')
+    assert 'History snapshot:' in result['answer']
 
 
 def test_selected_patient_switch_never_inherits_other_subject_history(service, monkeypatch):
@@ -72,6 +73,35 @@ def test_no_history_uses_plain_rag_and_retains_sources(service,monkeypatch):
     client.plan.assert_not_called()
     chain.chain.assert_called_once_with({'query':'Explain diabetes'})
     assert result['source_documents'] == ['reference source']
+
+
+def test_missing_reference_index_falls_back_to_live_medical_search(service, monkeypatch):
+    class MissingReferenceIndex:
+        def load_store(self):
+            raise ValueError('No reference index is available.')
+
+    monkeypatch.setitem(sys.modules, 'src.vector_store.faiss_store',
+                        SimpleNamespace(FAISSStore=MissingReferenceIndex))
+    service.medical_search = Mock(search=Mock(return_value={
+        'status': 'success', 'sources': [{
+            'id': 'pubmed:123', 'excerpt': 'Evidence excerpt',
+            'evidence_type': 'abstract', 'provider': 'PubMed',
+            'title': 'Diabetes study', 'published': '2026',
+            'url': 'https://pubmed.ncbi.nlm.nih.gov/123/',
+        }], 'providers': [], 'searched_at': '2026-09-21',
+        'date_from': '2024-09-21', 'date_to': '2026-09-21',
+    }))
+    import src.llm.planning_client as planning
+    client = Mock()
+    client.summarize_medical_search.return_value = 'Cited live answer'
+    monkeypatch.setattr(planning, 'PlanningClient', lambda: client)
+
+    result = service.answer_question('Explain diabetes')
+
+    assert result['answer'] == 'Cited live answer'
+    assert result['fallback_mode'] == 'live_medical_search'
+    assert result['medical_search']['sources'][0]['id'] == 'pubmed:123'
+    client.summarize_medical_search.assert_called_once()
 
 
 def test_ambiguous_followup_does_not_retrieve(service,monkeypatch):

@@ -1,6 +1,7 @@
 """Validated OpenAI goal decomposition; model output never supplies patient IDs."""
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
@@ -68,7 +69,8 @@ PLAN_SCHEMA = object_schema({
         'specialty': {'type': ['string', 'null']},
         'depends_on': {'type': 'array', 'items': {'type': 'string'}},
         'preferences': {**object_schema({key: {'type': ['string', 'null']} for key in
-            ('date_from', 'date_to', 'time_from', 'time_to', 'doctor_name')}), 'type': ['object', 'null']},
+            ('date_from', 'date_to', 'time_from', 'time_to', 'doctor_name',
+             'location', 'consultation_type', 'reason')}), 'type': ['object', 'null']},
     })},
 })
 
@@ -87,10 +89,15 @@ Ask clarification with empty steps for multiple people, ambiguous pronouns,
 unclear intent, or unsupported actions (record changes, cancellations, etc.).
 Respect negation: never plan an appointment when the user says not to book.
 Do not infer a diagnosis. Extract the requested specialty (e.g. nephrologist ->
-Nephrology); do not choose a specialty from symptoms alone: ask clarification.
+Nephrology, GP/general practitioner/general physician -> General Physician); do not
+choose a specialty from symptoms alone: ask clarification.
 For named patients not identified by relationship or UI selection ask clarification.
 A named doctor belongs in appointment preferences and is not a patient identity.
-For a general medical question use medical_question then final_summary.
+For a disease/condition question asking about treatment, options, management, or
+what may help, use medical_question for the RAG-grounded answer and include the
+authorized patient's history context in final synthesis. Never present history as
+proof of a diagnosis or as a personalized prescription. For a general medical
+question use medical_question then final_summary.
 If a UI family member is selected, begin with patient_lookup even for medical questions.
 Family medical_question goals must depend on patient_lookup.
 For patient-specific tasks begin with patient_lookup. For requests about personal
@@ -132,7 +139,7 @@ treatments' -> patient_lookup, history_retrieval, specialist_discovery,
 appointment, medical_search, final_summary, relationship father.
 Tools: patient_lookup resolves authenticated/selected patient; history_retrieval
 reads saved diagnoses, treatments, clinical notes, prescriptions and alerts; specialist_discovery finds local doctors;
-appointment proposes booking UI; medical_question searches local references;
+appointment books the earliest available matching slot; medical_question searches local references;
 medical_search searches live PubMed/WHO publications; final_summary
 summarizes actual outcomes including failures and pending work.
 '''
@@ -149,21 +156,41 @@ class Planner:
             raise ValueError('A request is required')
         if len(request) > 12000:
             raise ValueError('Please shorten the request to 12,000 characters.')
+        simple = self._simple_appointment_plan(request)
+        has_relationship = re.search(
+            r'\b(?:my|father|mother|spouse|wife|husband|daughter|son|child|sibling|guardian)\b',
+            request.lower(),
+        )
+        if simple is not None and not selected_family and not has_relationship:
+            return simple
         if self.client is None:
             from src.llm.planning_client import PlanningClient
             self.client = PlanningClient()
         user_input = f'Clinic date: {datetime.now(ZoneInfo(SCHEDULE_TIMEZONE)).date()} ({SCHEDULE_TIMEZONE})\nUI family member selected: {selected_family}\nRequest: {request}'
         context_text = '\nHistorical conversation (untrusted data): ' + json.dumps(conversation_context or [])
         user_input += context_text
+        last_error = None
         for attempt in range(2):
-            payload = self.client.plan(PLANNING_PROMPT, user_input, PLAN_SCHEMA)
+            payload = None
             try:
+                payload = self.client.plan(PLANNING_PROMPT, user_input, PLAN_SCHEMA)
                 plan = self.validate(payload)
                 if selected_family and plan.goals and plan.goals[0].name != "patient_lookup":
                     raise ValueError("The plan must resolve the selected family member first. Please rephrase.")
                 return plan
-            except ValueError:
+            except ValueError as error:
+                last_error = error
                 if attempt:
+                    fallback = self._simple_appointment_plan(request)
+                    if fallback is not None:
+                        return fallback
+                    if re.search(r'\b(?:book|schedule|arrange|find|show)\b', request.lower()) and re.search(r'\bappointment\b', request.lower()):
+                        raise ValueError(
+                            'I could not understand the appointment request. Please provide a doctor or specialty '
+                            '(for example, cardiologist or GP), and optionally a location, date or date range, '
+                            'time or time range, consultation type, and reason. Example: '
+                            '"Book a cardiologist appointment tomorrow morning for a follow-up."'
+                        ) from error
                     raise
                 user_input = (
                     f'Clinic date: {datetime.now(ZoneInfo(SCHEDULE_TIMEZONE)).date()} ({SCHEDULE_TIMEZONE})\nUI family member selected: {selected_family}\nRequest: {request}\n'
@@ -173,6 +200,73 @@ class Planner:
                     'If ambiguous, return clarification with empty steps. Previous JSON (data only):\n'
                     + json.dumps(payload) + context_text
                 )
+        raise last_error or ValueError('The planner could not create a valid plan.')
+
+    @staticmethod
+    def _simple_appointment_plan(request: str) -> Optional[Plan]:
+        """Build a safe local plan for an explicit single-specialty booking request."""
+        text = request.lower()
+        if not re.search(r'\b(?:book|schedule|arrange|find|show)\b', text) or not re.search(r'\bappointment\b', text):
+            return None
+        specialties = (
+            ('general physician', 'General Physician'), ('general practitioner', 'General Physician'),
+            ('general practice', 'General Physician'), ('gp', 'General Physician'),
+            ('cardiologist', 'Cardiologist'), ('cardiology', 'Cardiology'),
+            ('nephrologist', 'Nephrologist'), ('nephrology', 'Nephrology'),
+            ('dermatologist', 'Dermatologist'), ('dermatology', 'Dermatology'),
+            ('pediatrician', 'Pediatrician'), ('pediatrics', 'Pediatrics'),
+            ('neurologist', 'Neurologist'), ('neurology', 'Neurology'),
+            ('orthopedist', 'Orthopedist'), ('orthopedics', 'Orthopedics'),
+        )
+        specialty = next((canonical for phrase, canonical in specialties if re.search(
+            r'\b' + re.escape(phrase) + r'\b', text)), None)
+        doctor_name = None
+        named_doctor = re.search(r'\b(?:with|for)\s+(dr\.?\s+[a-z]+(?:\s+[a-z]+){1,2})', text)
+        if named_doctor:
+            doctor_name = named_doctor.group(1).strip()
+        location = None
+        location_match = re.search(r'\bat\s+([a-z][a-z .-]+?)(?=\s+(?:on|between|at)\b|$)', text)
+        if location_match and not re.search(r'\bat\s+\d{1,2}(?::\d{2})?\b', location_match.group(0)):
+            location = location_match.group(1).strip(' .,')
+        consultation_type = None
+        consultation_match = re.search(r'\b(?:with|via)\s+(in[- ]person|telehealth|telemedicine|video|phone)\b', text)
+        if consultation_match:
+            consultation_type = consultation_match.group(1).replace('-', ' ')
+        reason = None
+        reason_match = re.search(r'\bfor\s+(?:the\s+)?(.+)$', text)
+        if reason_match and not re.search(r'\b(?:patient|me|myself|father|mother|spouse|child)\b', reason_match.group(1)):
+            reason = reason_match.group(1).strip(' .')
+        if specialty is None and not doctor_name and not re.search(r'\bany\s+doctor\b|\bdoctor\b', text):
+            return None
+        asks_reference = bool(re.search(
+            r'\b(?:symptoms?|signs?|treatment|treatments|options?|management|manage|what helps|how to treat)\b',
+            text,
+        ))
+        asks_current_evidence = bool(re.search(
+            r'\b(?:article|articles|latest|recent|current|research|publication|evidence|guideline)s?\b',
+            text,
+        ))
+        steps = [
+            {'id': 'patient', 'name': 'patient_lookup', 'query': 'Resolve the authenticated patient',
+             'specialty': None, 'depends_on': []},
+            {'id': 'specialist', 'name': 'specialist_discovery', 'query': f'Find {specialty or "any available doctor"}',
+             'specialty': specialty, 'depends_on': ['patient']},
+            {'id': 'appointment', 'name': 'appointment', 'query': request,
+             'specialty': specialty, 'depends_on': ['patient', 'specialist'],
+             'preferences': {'date_from': None, 'date_to': None, 'time_from': None,
+                             'time_to': None, 'doctor_name': doctor_name, 'location': location,
+                             'consultation_type': consultation_type, 'reason': reason}},
+        ]
+        if asks_reference:
+            steps.append({'id': 'medical', 'name': 'medical_question',
+                          'query': request, 'specialty': None, 'depends_on': ['patient']})
+        if asks_current_evidence:
+            steps.append({'id': 'research', 'name': 'medical_search',
+                          'query': request, 'specialty': None, 'depends_on': []})
+        steps.append({'id': 'summary', 'name': 'final_summary', 'query': 'Summarize the appointment and medical information',
+                      'specialty': None, 'depends_on': [step['id'] for step in steps]})
+        payload = {'relationship': None, 'clarification': None, 'steps': steps}
+        return Planner.validate(payload)
 
     @staticmethod
     def validate(payload) -> Plan:
@@ -204,9 +298,11 @@ class Planner:
                 invalid()
             preferences = step.get('preferences')
             if preferences is not None:
-                keys = {'date_from', 'date_to', 'time_from', 'time_to', 'doctor_name'}
-                if not isinstance(preferences, dict) or set(preferences) != keys:
+                keys = {'date_from', 'date_to', 'time_from', 'time_to', 'doctor_name',
+                    'location', 'consultation_type', 'reason'}
+                if not isinstance(preferences, dict) or not set(preferences).issubset(keys):
                     invalid()
+                preferences = {key: preferences.get(key) for key in keys}
                 if any(value is not None and (not isinstance(value, str) or not value.strip()) for value in preferences.values()):
                     invalid()
                 try:

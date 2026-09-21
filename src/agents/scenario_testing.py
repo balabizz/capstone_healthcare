@@ -51,12 +51,14 @@ def run_scenario(name, query=None, planner=None):
         with execution._connect() as c:
             bookings = c.execute('SELECT COUNT(*) FROM appointments').fetchone()[0]
         actual = [g.name for g in plan.goals]
-        checks = {'expected_subgoals_present':all(g in actual for g in scenario['expected']), 'no_booking_written':bookings==0}
+        checks = {'expected_subgoals_present':all(g in actual for g in scenario['expected'])}
         if name=='Father history denied':
             checks['history_access_denied'] = any(r['goal']=='history_retrieval' and r['status']=='denied' for r in result['steps'])
         if name=='Father appointment':
-            checks['awaits_confirmation'] = any(r['goal']=='appointment' and r['status']=='awaiting_confirmation' for r in result['steps'])
-        return {'checks':checks,'scenario':name,'mode':'Synthetic database; live OpenAI planner; fixture reference answers and final summary; no external medical search.',
+            checks['appointment_booked'] = any(r['goal']=='appointment' and r['status']=='success' for r in result['steps']) and bookings == 1
+        else:
+            checks['no_booking_written'] = bookings == 0
+        return {'checks':checks,'scenario':name,'mode':'Synthetic database; live OpenAI planner; automatic earliest-slot booking; fixture reference answers and final summary; no external medical search.',
                 'plan':plan.details(),'steps':result['steps'],
                 'memory':flow.memory_traces+result.get('memory_traces',[]),
                 'expected_goals':scenario['expected'],'missing_expected_goals':[g for g in scenario['expected'] if g not in actual],

@@ -1,7 +1,7 @@
 langchain==0.1.9
+langchain-community==0.0.38
 langgraph==0.0.11
 faiss-cpu==1.8.0
-chromadb==0.5.23
 pypdf==4.0.1
 streamlit==1.55.0
 python-dotenv==1.0.0

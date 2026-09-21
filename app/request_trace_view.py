@@ -19,9 +19,9 @@ def render_breakdown(plan,steps):
         if edges:
             st.dataframe(edges,hide_index=True,use_container_width=True)
         for row in rows:
-            with st.expander(f"{row['step']} — {row['goal']} ({row['status']})"):
-                st.text(row['query'])
-                st.json({k:row[k] for k in ('tool','depends_on','blocked_by','duration_ms','specialty','preferences')})
+            st.write(f"{row['step']} — {row['goal']} ({row['status']})")
+            st.text(row['query'])
+            st.json({k:row[k] for k in ('tool','depends_on','blocked_by','duration_ms','specialty','preferences')})
 
 
 def render_request_traces(execution,requester,patient):

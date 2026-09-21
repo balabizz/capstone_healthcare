@@ -147,14 +147,64 @@ class GoalExecution:
         return result
 
     def answer_question(self, question: str, *, chat_history=None, check_access=None) -> Dict[str, Any]:
-        """Answer a medical question using the FAISS-backed RAG chain."""
+        """Answer with local RAG, or live medical evidence when no index exists."""
         from src.chains.rag_chain import RAGChain
         from src.vector_store.faiss_store import FAISSStore
 
-        vectorstore = FAISSStore().load_store()
+        try:
+            vectorstore = FAISSStore().load_store()
+        except ValueError as error:
+            if not str(error).startswith('No reference index is available.'):
+                raise
+            return self._answer_without_reference_index(question, chat_history, check_access)
         chain = RAGChain(vectorstore)
         result = (chain.query_with_history(question, chat_history, check_access=check_access)
                   if chat_history else chain.query(question))
+        return result
+
+    def _answer_without_reference_index(self, question, chat_history=None, check_access=None):
+        """Use live evidence or a clearly ungrounded OpenAI fallback without fake citations."""
+        if check_access:
+            check_access()
+        standalone = question
+        if chat_history:
+            from src.llm.conversation_context import resolve_question
+            resolved = resolve_question(question, chat_history)
+            if resolved['clarification']:
+                return {'question': question, 'answer': resolved['clarification'],
+                        'source_documents': [], 'needs_clarification': True}
+            standalone = resolved['question']
+        if check_access:
+            check_access()
+
+        from src.llm.medical_search_summary import usable_sources
+        from src.llm.planning_client import PlanningClient
+
+        search_bundle = None
+        try:
+            search_bundle = self.medical_search.search(standalone)
+        except (ValueError, RuntimeError):
+            pass
+        client = PlanningClient()
+        if search_bundle and usable_sources(search_bundle):
+            answer = client.summarize_medical_search(search_bundle)
+            fallback_mode = 'live_medical_search'
+        else:
+            answer = client._complete(
+                'You provide general educational health information when no local reference '
+                'documents or live publication excerpts are available. Do not diagnose, '
+                'prescribe, invent citations, or claim current clinical guidance. Explain '
+                'uncertainty and advise consulting a qualified clinician for personal advice.',
+                f'General medical question: {standalone}')
+            fallback_mode = 'openai_general'
+        if check_access:
+            check_access()
+        result = {'question': question, 'answer': answer, 'source_documents': [],
+                  'fallback_mode': fallback_mode}
+        if standalone != question:
+            result['standalone_question'] = standalone
+        if search_bundle:
+            result['medical_search'] = search_bundle
         return result
 
     def authenticate_user(self, username: str, password: str, user_type: str) -> bool:
@@ -237,6 +287,7 @@ class GoalExecution:
         *,
         request_id: Optional[str] = None,
         requester_patient_id: Optional[str] = None,
+        consultation_type: Optional[str] = None,
     ) -> bool:
         """Book an available 30-minute appointment slot."""
         started_at = perf_counter()
@@ -247,7 +298,8 @@ class GoalExecution:
             self.dependents.require_access(requester, patient_id, "book_appointment")
             result = self.schedule.book(
                 requester_patient_id=requester, patient_id=patient_id, doctor_id=doctor_id,
-                day=appointment_date.isoformat(), slot=slot, reason=reason.strip(), idempotency_key=request_id)
+                day=appointment_date.isoformat(), slot=slot, reason=reason.strip(),
+                consultation_type=consultation_type, idempotency_key=request_id)
             booked = result["status"] == "booked"
             replayed = bool(result.get('replayed',False))
             status = 'success' if booked else 'slot_unavailable'
@@ -277,7 +329,7 @@ class GoalExecution:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT a.appointment_datetime, a.status, a.reason,
+                    SELECT a.appointment_datetime, a.status, a.reason, a.consultation_type,
                        d.first_name || ' ' || d.last_name AS doctor_name, d.speciality
                 FROM appointments AS a JOIN doctors AS d ON d.doctor_id = a.doctor_id
                 WHERE a.patient_id = ? ORDER BY a.appointment_datetime

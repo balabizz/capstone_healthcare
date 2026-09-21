@@ -27,8 +27,9 @@ class ScheduleAPIClient:
             raise ScheduleUnavailable('Schedule API unavailable. If confirming a booking, retry the same request; '
                              'its request key prevents duplicate appointments.') from error
 
-    def specialists(self, specialty=None, doctor_name=None):
-        return self._post('/specialists', {'specialty': specialty, 'doctor_name': doctor_name})
+    def specialists(self, specialty=None, doctor_name=None, location=None):
+        return self._post('/specialists', {'specialty': specialty, 'doctor_name': doctor_name,
+                                           'location': location})
 
     def discover(self, **preferences):
         return self._post('/slots', preferences)

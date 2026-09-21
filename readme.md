@@ -19,7 +19,7 @@ capstone_healthcare/
 ├── data/                          # Data directory
 │   ├── raw/                       # Raw healthcare documents (PDFs)
 │   ├── processed/                 # Processed text documents
-│   └── embeddings/                # Vector store data (FAISS, ChromaDB)
+│   └── embeddings/                # FAISS vector store data
 │
 ├── notebooks/                     # Jupyter notebooks for exploration
 │   └── reference/                 # Reference materials and BRD
@@ -186,7 +186,7 @@ ehr.save_doctor(DoctorVO(
 ))
 ```
 
-SQLite stores structured patient and doctor records. ChromaDB remains separate and stores document chunks and embeddings for RAG retrieval.
+SQLite stores structured patient and doctor records. FAISS stores reference document chunks and embeddings for RAG retrieval.
 
 The SQLite EHR schema also includes:
 
@@ -311,34 +311,36 @@ OPENAI_API_KEY=your_key_here
 LLM_MODEL=gpt-3.5-turbo
 LLM_TEMPERATURE=0.7
 
-# Vector Database Path
+# Database and vector paths
+SQLITE_DB_PATH=./data/healthcare.db
 FAISS_INDEX_PATH=./data/embeddings/faiss
 
-# Tool APIs
-DOCTOR_SCHEDULE_API_KEY=your_doctor_api_key
-DOCTOR_SCHEDULE_API_URL=https://api.hospital.com/schedules
+# Optional private schedule service; leave URL empty for local SQLite scheduling
+SCHEDULE_TIMEZONE=Australia/Sydney
+SCHEDULE_API_URL=
+SCHEDULE_API_TOKEN=
 
-MEDLINE_API_KEY=your_medline_key
-BING_SEARCH_API_KEY=your_bing_search_key
+# Optional NCBI contact/key for live PubMed searches
+NCBI_EMAIL=
+NCBI_API_KEY=
+MEDICAL_SEARCH_DAYS=730
 
-EHR_DATABASE_URL=your_ehr_db_connection_string
-PATIENT_DATABASE_URL=your_patient_db_connection_string
+# Patient summary embeddings use the OpenAI API
+PATIENT_SUMMARY_EMBEDDING_MODEL=text-embedding-3-small
 
 # Document Processing
 CHUNK_SIZE=1000
 CHUNK_OVERLAP=200
 MAX_DOCUMENTS=1000
 
-# Agent Settings
-AGENT_MAX_ITERATIONS=10
-AGENT_TIMEOUT=300
+# Appointment polling interval, allowed range 2-60 seconds
+APPOINTMENT_REFRESH_SECONDS=5
 
 # Evaluation & Monitoring
 ENABLE_EVAL_LOGGING=True
 EVAL_THRESHOLD=0.75
 
 # Application Settings
-DEBUG=False
 LOG_LEVEL=INFO
 ```
 
@@ -497,7 +499,6 @@ pytest tests/test_rag_chain.py -v
 
 ### Vector & Data Layer
 - **FAISS**: Fast similarity search for patient context retrieval
-- **ChromaDB**: Persistent vector database with metadata management
 - **PyPDF**: PDF document processing and extraction
 
 ### Tool Integration
@@ -563,7 +564,7 @@ pytest tests/test_rag_chain.py -v
 - Test API connectivity separately
 
 ### Issue: Patient memory not retaining context
-- Check FAISS/ChromaDB paths are correct
+- Check the FAISS path is correct
 - Verify vector store persistence is enabled
 - Review memory module initialization
 - Check patient ID consistency across queries
@@ -657,9 +658,10 @@ appointment and summarize treatment methods.”
 2. The father grants booking and medical-enquiry permissions to the caller.
 3. Submit the prompt. The planner resolves the father from the caller's links;
    missing, unregistered, ambiguous, or unauthorized tasks show their status.
-4. Review the plan and response, then choose **Continue to appointment booking**.
-   Choose the doctor, date and time, then click **Book appointment**.
-5. The appointment belongs to the father, not the caller. Viewing his appointments
+4. The planner matches the requested specialty, discovers the next available slot,
+  and books it automatically through the chat flow.
+5. The response shows the booked date, time, doctor, specialty, timezone, and duration.
+6. The appointment belongs to the father, not the caller. Viewing his appointments
    additionally requires `view_appointments` permission.
 
 For multiple children, select a specific child first. Mother, spouse, husband,
@@ -696,7 +698,7 @@ treatments”, the planning prompt requests:
 | Resolve patient | `patients.resolve` | Uses authenticated caller and saved family selection; never model-supplied IDs |
 | Retrieve history | `medical_history.read` | Patient resolution and `view_medical` permission; reads up to 50 latest saved entries |
 | Find specialist | `doctors.find_specialist` | Patient resolution; matches the requested specialty against local doctors |
-| Prepare appointment | `appointments.propose_view` | Patient and specialist lookup, `book_appointment` permission; awaits confirmation |
+| Book appointment | `appointments.discover` + `appointments.book` | Patient and specialist lookup; books the earliest available matching slot |
 | Search recent publications | `medical_search.latest` | Live PubMed/WHO search with dated sources and explicit provider outcomes |
 | Summarize outcomes | `responses.summarize` | Uses all actual step results, including empty history, denied access and unavailable tools |
 
@@ -706,11 +708,10 @@ final summary. The executor revalidates before running. No model output can supp
 SQL, a tool implementation or an authorization grant. Ambiguous requests return a
 clarification instead of executing. One patient is supported per request.
 
-The UI displays the plan, tools, dependencies and outcomes. **Continue to appointment
-booking** carries the resolved patient and matched specialty into the existing
-booking screen; the user selects a doctor, date and time and confirms the booking.
-A missing/denied history step does not block independent booking work. Each step
-logs its actual status rather than marking a proposed appointment as booked.
+The UI displays the plan, tools, dependencies and outcomes. Appointment discovery and
+booking happen only through the chat flow. A missing/denied history step does not block
+independent booking work. Each step logs its actual status, and the appointment step is
+successful only after the transactional booking completes.
 Clinical text is not copied into execution logs; the request and authorized history
 may be sent to OpenAI for planning/synthesis. Outcomes are retained only in the
 current Streamlit session, not long-term conversational memory.
@@ -718,7 +719,7 @@ current Streamlit session, not long-term conversational memory.
 Limits: long-term memory and evaluation remain separate work.
 Medical-record editing is implemented in the attendant workflow described below. History retrieval is a read-only adapter over existing records, not
 a complete EHR management workflow. Specialist discovery is a local specialty
-match; doctor availability is checked in the booking view. The legacy
+match; doctor availability is checked during chat execution. The legacy
 `GoalExecution.execute()` remains for direct goal callers; the UI uses
 `PlanExecution.run()` for complete plans.
 
@@ -729,13 +730,25 @@ measure live model planning quality or replace an end-to-end API/UI acceptance r
 
 ### Automated appointment discovery and Doctor Schedule API
 
+Chat appointment requests may follow this generic structure:
+
+`Book/find/show <appointment> with <doctor, specialty, or any doctor> at <location> on/between <date or date range> at/between <time or time range> with <consultation type> for <patient or reason>`
+
+The optional clauses are normalized into doctor, specialty, location, date/time
+constraints, consultation type, and reason. Patient identity comes only from the
+authenticated session or authorized family selection. When date/time is omitted,
+the soonest slot is booked without confirmation, starting four hours after the
+request and rolling to the next clinic day when necessary. `today` and `tomorrow`
+are converted to clinic-local dates before searching. Location filters stored doctor
+addresses and consultation type is persisted with the appointment.
+
 Appointment discovery now extends the existing `GoalExecution.book_appointment()`,
 `appointments` table, patient appointment list and doctor schedule view. It does not
 create a separate booking database. `ScheduleRepository` supplies calendar checks
 and atomic writes beneath that existing booking entry point.
 
-- Doctors configure recurring weekday working windows and whole-day leave in
-  **Appointment View → My working calendar**. Multiple windows support lunch breaks.
+- Doctors configure recurring weekday working windows and whole-day leave through the
+  schedule service or administrative tooling. Multiple windows support lunch breaks.
   New doctors have no availability until hours are configured.
 - The OpenAI planner extracts specialty, an optional named doctor, date range and
   time window. Relative dates use the configured clinic timezone. “Nephrology”
@@ -744,13 +757,14 @@ and atomic writes beneath that existing booking entry point.
   hours, days off, past times, and both doctor and patient appointment conflicts.
   If dates are omitted it searches the next 30 days. It never silently broadens
   explicit date/time/doctor preferences when there are no matches.
-- **Continue to appointment booking** carries proposed slots into the existing
-  appointment screen. The first slot is selected automatically; the patient can
-  choose another and click **Confirm and book appointment**. A request does not
-  reserve a slot before confirmation.
-- Confirmation rechecks permissions, calendars and conflicts inside a SQLite write
-  transaction. The same request key returns the original appointment on retry;
-  conflicting reuse is rejected. Existing appointments remain when hours change.
+- The first available matching slot is booked automatically from chat. If a concurrent
+  booking consumes that slot, execution retries the next discovered slot.
+- When no date or time is supplied, the search starts four hours after the request.
+  It uses remaining same-day slots first, then rolls to the next day when the clinic
+  day has ended.
+- Booking rechecks permissions, calendars and conflicts inside a SQLite write transaction.
+  The same request key returns the original appointment on retry; conflicting reuse is
+  rejected. Existing appointments remain when hours change.
 
 For demo data only, after seeding doctors, create example calendars explicitly:
 
@@ -1195,8 +1209,10 @@ uploaded PDFs**. Each file reports success, duplicate skip, or failure. The pane
 shows the indexed-document inventory and a **Preview reference search** field.
 Indexed documents are immediately available to the existing medical RAG workflow.
 
-This library is shared across users. Use it for guidelines, educational material and
-other general medical references; patient notes belong in the medical-record workflow.
+This library is shared across users and all patients. Every authenticated attendant
+and doctor can upload general guidelines, educational material and other medical
+references; no patient assignment is required for this shared library. Patient notes
+and patient-specific documents belong in the medical-record workflow instead.
 The upload control is not exposed to patient accounts. The CLI is for trusted local
 operators. Neither route accepts uploaded serialized FAISS indexes or pickle files.
 
@@ -1481,3 +1497,5 @@ Separate targeted runs of appointment discovery and remembered follow-up passed 
 are saved alongside the full report. Live planner reliability is therefore not claimed
 as 100%. The CLI now records explicit structured planner attempts for synthetic
 scenarios to help diagnose invalid outputs; it does not record private chain-of-thought.
+
+Patient document uploads: Doctors and attendants can use **Patient documents — upload and download** to select a patient and save original PDFs (up to 20 MB / 200 pages) to the patient_documents table in SQLite. Attendants can access assigned patients only. Saved files can be downloaded from the selected patient's document list; duplicate PDFs are detected per patient. These files are stored as patient attachments and are not indexed into shared reference search. The separate Reference documents section remains available for general reference material.

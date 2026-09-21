@@ -8,10 +8,13 @@ from src.config import SCHEDULE_TIMEZONE
 from src.database.sqlite_store import SQLiteStore
 from src.repositories.dependent_repository import DependentRepository
 
-ALIASES = {'nephrologist': 'nephrology', 'cardiologist': 'cardiology',
+ALIASES = {'gp': 'general physician', 'general practice': 'general physician',
+           'general practitioner': 'general physician',
+           'general medicine': 'general physician', 'family physician': 'general physician',
+           'nephrologist': 'nephrology', 'cardiologist': 'cardiology',
            'dermatologist': 'dermatology', 'pediatrician': 'pediatrics',
            'neurologist': 'neurology', 'urologist': 'urology',
-           'psychiatrist': 'psychiatry', 'oncologist': 'oncology',
+           'psychiatrist': 'psychiatry', 'oncologist': 'oncology', 'cancer specialist': 'oncology',
            'gastroenterologist': 'gastroenterology', 'endocrinologist': 'endocrinology',
            'pulmonologist': 'pulmonology', 'orthopedist': 'orthopedics'}
 
@@ -67,13 +70,15 @@ class ScheduleRepository:
             return [row['day'] for row in connection.execute(
                 'SELECT day FROM doctor_days_off WHERE doctor_id = ? ORDER BY day', (doctor_id,))]
 
-    def specialists(self, specialty=None, doctor_name=None):
+    def specialists(self, specialty=None, doctor_name=None, location=None):
         with self.store._connect() as connection:
-            rows = connection.execute('SELECT doctor_id, first_name, last_name, speciality FROM doctors '
+            rows = connection.execute('SELECT doctor_id, first_name, last_name, speciality, address FROM doctors '
                                       'ORDER BY last_name, first_name, doctor_id').fetchall()
         # Exact full-name match: never silently choose a different named doctor.
         name = (doctor_name or '').strip().lower().removeprefix('dr. ').removeprefix('dr ')
+        location_key = (location or '').strip().lower()
         return [dict(r) for r in rows if (not specialty or specialty_key(r['speciality']) == specialty_key(specialty))
+            and (not location_key or location_key in (r['address'] or '').lower())
                 and (not name or name == f"{r['first_name']} {r['last_name']}".lower())]
 
     def _allowed(self, connection, doctor_id, patient_id, day, slot):
@@ -97,7 +102,7 @@ class ScheduleRepository:
             "AND datetime(appointment_datetime, '+30 minutes') > datetime(?)",
             (doctor_id, patient_id, stamp, stamp)).fetchone()
 
-    def discover(self, *, requester_patient_id, patient_id, specialty=None, doctor_name=None,
+    def discover(self, *, requester_patient_id, patient_id, specialty=None, doctor_name=None, location=None,
                  date_from=None, date_to=None, time_from=None, time_to=None, limit=5):
         self.permissions.require_access(requester_patient_id, patient_id, 'book_appointment')
         if not self.store.get_patient(patient_id):
@@ -111,7 +116,7 @@ class ScheduleRepository:
         latest = minute(time_to) if time_to else 24 * 60
         if earliest >= latest or type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError('Invalid time window or result limit.')
-        doctors, result = self.specialists(specialty, doctor_name), []
+        doctors, result = self.specialists(specialty, doctor_name, location), []
         with self.store._connect() as connection:
             for offset in range((last - first).days + 1):
                 day = first + timedelta(days=offset)
@@ -130,12 +135,13 @@ class ScheduleRepository:
                     break
         return result[:limit]
 
-    def book(self, *, requester_patient_id, patient_id, doctor_id, day, slot, reason='', idempotency_key):
+    def book(self, *, requester_patient_id, patient_id, doctor_id, day, slot, reason='',
+             consultation_type=None, idempotency_key):
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128:
             raise ValueError('A booking request key is required.')
         requested = date.fromisoformat(day)
         minute(slot)
-        payload = json.dumps([patient_id, doctor_id, day, slot, reason], separators=(',', ':'))
+        payload = json.dumps([patient_id, doctor_id, day, slot, reason, consultation_type], separators=(',', ':'))
         with self.store._connect() as connection:
             connection.execute('BEGIN IMMEDIATE')
             # Permission rechecked inside the booking lock; revocation cannot race the write.
@@ -152,8 +158,8 @@ class ScheduleRepository:
             if not self._allowed(connection, doctor_id, patient_id, requested, slot):
                 return {'status': 'slot_unavailable'}
             appointment_id = f'appointment-{uuid4().hex}'
-            connection.execute('INSERT INTO appointments (appointment_id, patient_id, doctor_id, appointment_datetime, reason) '
-                'VALUES (?, ?, ?, ?, ?)', (appointment_id, patient_id, doctor_id, f'{day} {slot}', reason))
+            connection.execute('INSERT INTO appointments (appointment_id, patient_id, doctor_id, appointment_datetime, reason, consultation_type) '
+                'VALUES (?, ?, ?, ?, ?, ?)', (appointment_id, patient_id, doctor_id, f'{day} {slot}', reason, consultation_type))
             connection.execute('INSERT INTO booking_requests VALUES (?, ?, ?, ?)',
                 (requester_patient_id, idempotency_key, payload, appointment_id))
         return {'status': 'booked', 'appointment_id': appointment_id, 'replayed': False}

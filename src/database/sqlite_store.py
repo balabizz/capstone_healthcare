@@ -107,6 +107,7 @@ class SQLiteStore:
                     appointment_datetime TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'scheduled',
                     reason TEXT,
+                    consultation_type TEXT,
                     notes TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

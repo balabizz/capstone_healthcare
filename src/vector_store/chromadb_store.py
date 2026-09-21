@@ -3,7 +3,9 @@
 from typing import List, Dict, Any
 from langchain.vectorstores import Chroma
 from langchain.embeddings.openai import OpenAIEmbeddings
-from src.config import CHROMADB_PATH
+from src.config import EMBEDDINGS_DIR
+
+CHROMADB_PATH = str(EMBEDDINGS_DIR / "chromadb")
 
 
 class ChromaDBStore:

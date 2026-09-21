@@ -28,6 +28,59 @@ def test_planner_uses_model_for_semantic_decomposition():
     assert client.plan.call_count == 1
 
 
+def test_simple_appointment_falls_back_when_planner_fails():
+    client = Mock()
+    client.plan.side_effect = ValueError('OpenAI planner unavailable')
+
+    plan = Planner(client).plan('book a cardiologist appointment')
+
+    assert [goal.name for goal in plan.goals] == [
+        'patient_lookup', 'specialist_discovery', 'appointment', 'final_summary']
+    assert plan.goals[1].specialty == 'Cardiologist'
+    assert plan.goals[2].preferences == {
+        'date_from': None, 'date_to': None, 'time_from': None,
+        'time_to': None, 'doctor_name': None, 'location': None,
+        'consultation_type': None, 'reason': None,
+    }
+    assert client.plan.call_count == 0
+
+
+def test_legacy_appointment_preferences_gain_new_optional_fields():
+    payload = sample()
+    payload['relationship'] = None
+    payload['steps'][3]['preferences'] = {
+        'date_from': '2030-01-07', 'date_to': '2030-01-07',
+        'time_from': '10:00', 'time_to': '10:30', 'doctor_name': None,
+    }
+
+    plan = Planner.validate(payload)
+
+    assert plan.goals[3].preferences['location'] is None
+    assert plan.goals[3].preferences['consultation_type'] is None
+    assert plan.goals[3].preferences['reason'] is None
+
+
+def test_appointment_fallback_supports_any_doctor_when_planner_fails():
+    client = Mock()
+    client.plan.side_effect = ValueError('planner unavailable')
+
+    plan = Planner(client).plan('find an appointment with any doctor')
+
+    assert plan.goals[1].name == 'specialist_discovery'
+    assert plan.goals[1].specialty is None
+    assert plan.goals[2].preferences['doctor_name'] is None
+
+
+def test_mixed_booking_symptoms_and_articles_preserves_medical_goals():
+    plan = Planner()._simple_appointment_plan(
+        'Book a cardiologist appointment and show articles about symptoms and treatment options'
+    )
+
+    assert [goal.name for goal in plan.goals] == [
+        'patient_lookup', 'specialist_discovery', 'appointment',
+        'medical_question', 'medical_search', 'final_summary']
+
+
 @pytest.mark.parametrize('change', [
     lambda p: p['steps'][0].update(name='execute_sql'),
     lambda p: p['steps'][1].update(depends_on=['f']),
@@ -65,10 +118,11 @@ def test_denied_history_does_not_block_independent_booking(service):
     result = PlanExecution(service, summarize).run(Planner.validate(sample()),
         patient_id='caller', request_id='req')
     assert [s['status'] for s in result['steps']] == [
-        'success', 'denied', 'success', 'awaiting_confirmation', 'failed', 'success']
+        'success', 'denied', 'success', 'success', 'failed', 'success']
     assert result['booking']['subject_patient_id'] == 'father'
+    assert result['booking']['status'] == 'booked'
     assert 'no current treatment claim can be verified' in result['answer']
-    assert service.get_patient_appointments('father') == []
+    assert len(service.get_patient_appointments('father')) == 1
     assert len(service.events.list_events(request_id='req')) == 12
 
 

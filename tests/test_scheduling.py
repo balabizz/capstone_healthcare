@@ -50,6 +50,22 @@ def test_earliest_slots_use_alias_calendars_and_named_doctor(schedule):
     assert discover(schedule, doctor_name='Unknown Doctor') == []
 
 
+def test_general_practice_aliases_match_general_physician(schedule):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'General Physician'")
+    for specialty in ('General Physician', 'General Practice', 'General Practitioner', 'General Medicine', 'Family Physician', 'GP'):
+        assert len(schedule.specialists(specialty)) == 2
+
+
+def test_gp_query_discovers_available_general_physician_slots(schedule):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'General Physician'")
+    slots = schedule.discover(requester_patient_id='p1', patient_id='p1', specialty='GP',
+                              date_from='2030-01-07', date_to='2030-01-07')
+    assert slots
+    assert all(slot['speciality'] == 'General Physician' for slot in slots)
+
+
 def test_lunch_time_off_and_no_calendar_are_unavailable(schedule):
     assert discover(schedule, time_from='12:00', time_to='14:00') == []
     assert booking(schedule, slot='12:00')['status'] == 'slot_unavailable'
@@ -162,7 +178,8 @@ def test_plan_preferences_reach_slot_discovery(schedule):
     payload = sample()
     payload['relationship'] = None
     payload['steps'][3]['preferences'] = dict(date_from='2030-01-07', date_to='2030-01-07',
-        time_from='10:00', time_to='11:00', doctor_name='Second Doctor')
+        time_from='10:00', time_to='11:00', doctor_name='Second Doctor',
+        location=None, consultation_type=None, reason=None)
     execution = GoalExecution(str(schedule.store.database_path))
     execution.schedule = schedule
     from tests.search_stub import OfflineMedicalSearch
@@ -170,4 +187,87 @@ def test_plan_preferences_reach_slot_discovery(schedule):
     result = PlanExecution(execution, lambda e: 'Ready to confirm').run(Planner.validate(payload), patient_id='p1')
     slots = result['booking']['slots']
     assert [(s['doctor_id'], s['time']) for s in slots] == [('d2', '10:00'), ('d2', '10:30')]
-    assert execution.get_patient_appointments('p1') == []
+    assert result['booking']['status'] == 'booked'
+    assert result['booking']['slot']['doctor_id'] == 'd2'
+    assert execution.get_patient_appointments('p1')[0]['appointment_datetime'] == '2030-01-07 10:00'
+
+
+def test_inferred_today_business_hours_do_not_block_next_available_slot(schedule):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'Cardiologist' WHERE doctor_id = 'd2'")
+    schedule.now = lambda: datetime(2030, 1, 6, 8, tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+    from src.agents.planner import Planner
+    from src.agents.plan_execution import PlanExecution
+    from src.agents.goal_execution import GoalExecution
+    payload = {'relationship': None, 'clarification': None, 'steps': [
+        {'id': 'p', 'name': 'patient_lookup', 'query': 'Resolve patient', 'specialty': None, 'depends_on': []},
+        {'id': 'd', 'name': 'specialist_discovery', 'query': 'Find a cardiologist', 'specialty': 'Cardiology', 'depends_on': ['p']},
+        {'id': 'a', 'name': 'appointment', 'query': 'Prepare appointment with a cardiologist', 'specialty': 'Cardiology',
+         'depends_on': ['p', 'd'], 'preferences': {'date_from': '2030-01-06', 'date_to': '2030-01-06',
+                                                   'time_from': '09:00', 'time_to': '17:00', 'doctor_name': None,
+                                                   'location': None, 'consultation_type': None, 'reason': None}},
+        {'id': 'f', 'name': 'final_summary', 'query': 'Summarize appointment', 'specialty': None, 'depends_on': ['p', 'd', 'a']},
+    ]}
+    execution = GoalExecution(str(schedule.store.database_path))
+    execution.schedule = schedule
+    result = PlanExecution(execution, lambda evidence: 'Booked').run(Planner.validate(payload), patient_id='p1')
+    assert result['booking']['slot']['date'] == '2030-01-07'
+    assert result['booking']['slot']['time'] == '10:00'
+
+
+def test_unspecified_booking_waits_four_hours_before_booking(schedule):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'Cardiologist' WHERE doctor_id = 'd1'")
+    schedule.now = lambda: datetime(2030, 1, 7, 8, tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+    from src.agents.planner import Planner
+    from src.agents.plan_execution import PlanExecution
+    from src.agents.goal_execution import GoalExecution
+    payload = {'relationship': None, 'clarification': None, 'steps': [
+        {'id': 'p', 'name': 'patient_lookup', 'query': 'Resolve patient', 'specialty': None, 'depends_on': []},
+        {'id': 'd', 'name': 'specialist_discovery', 'query': 'Find a cardiologist', 'specialty': 'Cardiology', 'depends_on': ['p']},
+        {'id': 'a', 'name': 'appointment', 'query': 'Book a cardiologist appointment', 'specialty': 'Cardiology',
+         'depends_on': ['p', 'd'], 'preferences': {'date_from': None, 'date_to': None,
+                                                   'time_from': None, 'time_to': None, 'doctor_name': None,
+                                                   'location': None, 'consultation_type': None, 'reason': None}},
+        {'id': 'f', 'name': 'final_summary', 'query': 'Summarize appointment', 'specialty': None, 'depends_on': ['p', 'd', 'a']},
+    ]}
+    execution = GoalExecution(str(schedule.store.database_path))
+    execution.schedule = schedule
+    result = PlanExecution(execution, lambda evidence: 'Booked').run(Planner.validate(payload), patient_id='p1')
+    assert result['booking']['slot']['date'] == '2030-01-07'
+    assert result['booking']['slot']['time'] == '14:00'
+
+
+def test_location_and_consultation_type_reach_booking(schedule):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'Cardiologist', address = '42 Heart Road, Bengaluru' WHERE doctor_id = 'd1'")
+    schedule.now = lambda: datetime(2030, 1, 6, 8, tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+    slots = schedule.discover(requester_patient_id='p1', patient_id='p1', specialty='Cardiology',
+                              location='Bengaluru', date_from='2030-01-07', date_to='2030-01-07')
+    assert slots and slots[0]['doctor_id'] == 'd1'
+    result = schedule.book(requester_patient_id='p1', patient_id='p1', doctor_id='d1',
+                           day=slots[0]['date'], slot=slots[0]['time'], reason='Annual review',
+                           consultation_type='telehealth', idempotency_key='location-consultation')
+    assert result['status'] == 'booked'
+    with schedule.store._connect() as connection:
+        assert connection.execute('select consultation_type from appointments').fetchone()[0] == 'telehealth'
+
+
+def test_today_and_tomorrow_are_converted_in_clinic_timezone(schedule):
+    schedule.now = lambda: datetime(2030, 1, 6, 8, tzinfo=ZoneInfo(SCHEDULE_TIMEZONE))
+    from src.agents.planner import Planner
+    from src.agents.plan_execution import PlanExecution
+    from src.agents.goal_execution import GoalExecution
+    payload = {'relationship': None, 'clarification': None, 'steps': [
+        {'id': 'p', 'name': 'patient_lookup', 'query': 'Resolve patient', 'specialty': None, 'depends_on': []},
+        {'id': 'd', 'name': 'specialist_discovery', 'query': 'Find a nephrologist', 'specialty': 'Nephrology', 'depends_on': ['p']},
+        {'id': 'a', 'name': 'appointment', 'query': 'Book a nephrologist appointment tomorrow', 'specialty': 'Nephrology',
+         'depends_on': ['p', 'd'], 'preferences': {'date_from': '2030-01-06', 'date_to': '2030-01-06',
+            'time_from': None, 'time_to': None, 'doctor_name': None, 'location': None,
+            'consultation_type': None, 'reason': None}},
+        {'id': 'f', 'name': 'final_summary', 'query': 'Summarize appointment', 'specialty': None, 'depends_on': ['p', 'd', 'a']},
+    ]}
+    execution = GoalExecution(str(schedule.store.database_path))
+    execution.schedule = schedule
+    result = PlanExecution(execution, lambda evidence: 'Booked').run(Planner.validate(payload), patient_id='p1')
+    assert result['booking']['slot']['date'] == '2030-01-07'

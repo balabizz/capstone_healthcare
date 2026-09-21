@@ -8,7 +8,7 @@ Implement the BRD workflow as a controlled agentic system that can:
 2. retrieve authorized patient context;
 3. decompose the request into ordered, typed sub-goals;
 4. call only the tools allowed for each sub-goal;
-5. require confirmation before booking or changing clinical data;
+5. require explicit booking intent before booking or changing clinical data;
 6. retrieve current medical information from trusted sources;
 7. synthesize one answer with appointment status, medical information, and citations;
 8. retain a privacy-safe summary for future conversations.
@@ -41,9 +41,7 @@ flowchart TB
     PMEM --> LOAD
 
     EHR --> SYNTH[Response synthesizer]
-    APPT --> CONFIRM{Patient confirmation}
-    CONFIRM -->|confirmed| APPT
-    CONFIRM -->|declined| SYNTH
+    APPT --> SYNTH
     SEARCH --> RAG
     RAG --> SYNTH
     SYNTH --> SAFE[Safety and citation check]
@@ -107,7 +105,7 @@ Suggested plan contract:
       "depends_on": ["g2"],
       "tool": "appointments.book",
       "arguments": {},
-      "requires_confirmation": true
+      "requires_confirmation": false
     },
     {
       "id": "g4",
@@ -146,8 +144,7 @@ START
        -> find_slots
        -> search_medical_sources
        -> summarize_sources
-  -> request_confirmation (only for booking/EHR writes)
-  -> execute_confirmed_action
+  -> execute_requested_action
   -> refresh_patient_summary (only after EHR change)
   -> safety_and_grounding_check
   -> synthesize_response
@@ -159,6 +156,47 @@ Independent read-only goals may run concurrently. Goals that write data remain s
 
 ### 4.3 Sample BRD scenario
 
+### 4.3.1 Generic appointment intent
+
+The chat planner accepts appointment requests in this structure:
+
+`Book/find/show <appointment> with <doctor, specialty, or any doctor> at <location> on/between <date or date range> at/between <time or time range> with <consultation type> for <patient or reason>`
+
+All clauses after the appointment action are optional. The planner normalizes them
+into `doctor_name`, `specialty`, `location`, `date_from`, `date_to`, `time_from`,
+`time_to`, `consultation_type`, and `reason`. The authenticated patient or the
+authorized selected dependent is always the patient identity; free text such as
+`for a follow-up` is a reason and cannot change the patient scope. If date/time is
+omitted, the soonest available slot is booked automatically without asking for
+confirmation; the search starts four hours after the request and rolls to the next
+clinic day when needed. The words `today` and `tomorrow` are converted to dates in
+the clinic timezone before searching. A location filters the doctor's stored address,
+and consultation type is persisted with the appointment.
+
+#### Appointment booking state machine
+
+Every appointment request follows this deterministic sequence:
+
+1. **Verify patient scope**: require an authenticated patient profile, resolve one
+  selected dependent when present, verify the linked record exists, and recheck the
+  `book_appointment` permission for a dependent.
+2. **Normalize intent**: convert `today` and `tomorrow` to clinic-local ISO dates;
+  preserve explicit dates, ranges, times, doctor names, locations, consultation type,
+  and reason. Never use free-text patient wording to change the authenticated scope.
+3. **Discover candidates**: filter doctors by specialty, exact doctor name, location,
+  and calendar availability. `any doctor` leaves specialty and doctor filters empty.
+4. **Apply the default window**: when no date/time is explicit, search from request time
+  plus four hours, then roll to the next clinic day if necessary.
+5. **Book automatically**: attempt candidates in chronological order with an idempotency
+  key. A concurrent conflict advances to the next candidate; no confirmation prompt is
+  inserted into this flow.
+6. **Return the result**: report booking status, patient scope, doctor, specialty, date,
+  time, timezone, duration, consultation type, location, and reason.
+
+The appointment goal is successful only after the transactional booking write succeeds.
+Missing patient verification, denied dependent access, invalid explicit constraints, and
+no matching candidates are actionable outcomes, not silent fallbacks.
+
 For: "My 70-year-old father has chronic kidney disease. Book a nephrologist and summarize the latest treatments."
 
 1. Resolve whether the authenticated user is allowed to access the father's record. If the patient cannot be identified or access is not authorized, ask for the missing information; do not retrieve records.
@@ -166,8 +204,12 @@ For: "My 70-year-old father has chronic kidney disease. Book a nephrologist and 
 3. Retrieve only that patient's relevant longitudinal summary from patient memory.
 4. Search doctors by normalized specialty `Nephrology`, then return matching open slots.
 5. Search trusted medical sources and pass their content and metadata to the medical RAG summarizer.
-6. Ask the user to select and confirm a slot.
-7. Book the selected slot transactionally and return a confirmation ID.
+6. If the user gives no date or time, search from four hours after request time and
+  book the soonest available slot without confirmation. Search
+  the remaining slots that day first; when the day ends, continue from the next day.
+  Book the earliest available matching slot transactionally; if no slot remains available,
+  report the failure and ask the user to change the constraints.
+7. Return the booked date, time, doctor, specialty, timezone, and duration.
 8. Synthesize a response that clearly separates patient-specific facts, general medical information, and the completed administrative action.
 
 ## 5. Tool design
@@ -177,8 +219,8 @@ All tools should accept and return typed objects. Tools, not prompts, enforce au
 ### Appointment tool
 
 - `find_doctors(specialty, location=None)`
-- `find_slots(doctor_id, date_range)`
-- `book(patient_id, doctor_id, slot, reason, idempotency_key)`
+- `find_slots(doctor_id=None, specialty=None, location=None, date_range=None, time_range=None)`
+- `book(patient_id, doctor_id, slot, reason, consultation_type, idempotency_key)`
 - `cancel(appointment_id, patient_id)`
 - For this capstone, adapt the existing SQLite doctor and appointment methods behind this interface. A later Doctor Schedule API adapter can implement the same interface.
 - Add a unique constraint for active doctor/date-time bookings and use a transaction to prevent race conditions.
@@ -211,11 +253,12 @@ All tools should accept and return typed objects. Tools, not prompts, enforce au
 Keep prompts in `src/llm/prompt_templates.py` and version them.
 
 1. **Context-selection prompt**: reduce retrieved facts to the minimum relevant context; never infer missing clinical facts.
-2. **Planning prompt**: return only the plan schema, allowed tools, dependencies, missing information, and confirmation requirements.
+2. **Planning prompt**: return only the plan schema, allowed tools, dependencies, and missing information.
 3. **Medical-query formulation prompt**: convert the user intent and relevant condition into a source-search query without exposing unnecessary patient identifiers.
 4. **Evidence summarization prompt**: summarize only supplied evidence, attach source references to claims, expose uncertainty, and avoid diagnosis or personalized treatment directives.
-5. **Action proposal prompt**: present available appointment choices; it cannot claim a booking succeeded.
-6. **Action execution**: deterministic application code invokes the booking/EHR tool after explicit confirmation.
+5. **Action intent prompt**: identify explicit booking intent and normalize the requested specialty.
+6. **Action execution**: deterministic application code books the earliest available matching slot
+  after authorization and records an idempotency key.
 7. **Response synthesis prompt**: combine verified tool outputs and evidence into sections for patient context, appointment result, general medical information, cautions, and sources.
 8. **Safety/grounding check**: reject unsupported claims, distinguish general information from patient-specific facts, and show emergency guidance when relevant.
 
@@ -234,7 +277,7 @@ class HealthcareState(TypedDict):
     plan: dict
     completed_goal_ids: list[str]
     tool_results: dict[str, object]
-    pending_confirmation: dict | None
+    booking_result: dict | None
     evidence: list[dict]
     final_response: str | None
     errors: list[dict]
@@ -279,7 +322,7 @@ The existing `src/agents/goal_execution.py` can be gradually reduced to an orche
 | Requirement | Current state | Required change |
 |---|---|---|
 | Multi-step planner | Keyword routing returns only one goal | Structured multi-goal planner, dependency validation, clarification support |
-| Appointment booking | SQLite UI flow exists | Wrap as agent tools, add confirmation, idempotency, and transactional uniqueness |
+| Appointment booking | Chat-only automatic booking | Wrap as agent tools, add idempotency and transactional uniqueness |
 | Medical history | Schema exists | Add repository/tool CRUD, authorization, audit trail, and summary refresh |
 | Disease search | Local FAISS RAG only | Add trusted external search adapter and dated/cited evidence |
 | Long-term patient memory | Vector-store wrappers exist | Add patient-scoped summary creation, metadata filtering, refresh/version policy |
@@ -300,7 +343,7 @@ The existing `src/agents/goal_execution.py` can be gradually reduced to an orche
 
 1. Define Pydantic schemas for goals, plans, tool inputs, and outputs.
 2. Implement the structured planner with a deterministic fallback for common intents.
-3. Build the LangGraph state machine, confirmation interrupt, retries, and partial-failure handling.
+3. Build the LangGraph state machine, automatic booking retries, and partial-failure handling.
 4. Show the validated plan and tool outcomes in Streamlit.
 
 ### Phase 3 - memory and medical RAG
@@ -312,7 +355,7 @@ The existing `src/agents/goal_execution.py` can be gradually reduced to an orche
 
 ### Phase 4 - evaluation and UI
 
-1. Add test scenarios for single-goal, multi-goal, clarification, denied access, declined confirmation, unavailable slots, duplicate booking, and search failure.
+1. Add test scenarios for single-goal, multi-goal, clarification, denied access, automatic booking, unavailable slots, duplicate booking, and search failure.
 2. Measure plan validity, tool-selection accuracy, booking success, grounded-claim rate, citation coverage, latency, and failures per tool.
 3. Add patient/doctor dashboards, appointment tracking, plan traces, and redacted audit logs.
 
@@ -323,8 +366,7 @@ The capstone scenario passes only when the system:
 - generates at least the history, appointment, research, and synthesis goals;
 - respects goal dependencies;
 - reads the correct authorized patient's SQLite history;
-- proposes a real available nephrology slot;
-- does not book before explicit confirmation;
+- books the next available nephrology slot and returns its date, time, doctor, specialty, timezone, and duration;
 - prevents duplicate slot booking;
 - produces a treatment summary grounded in dated trusted sources;
 - separates general information from individualized medical advice;
@@ -349,19 +391,28 @@ is the earlier proposal, not a description of all implemented features.
 JSON-schema output. `PlanExecution.run()` executes the allowed tools sequentially,
 resolves identity from the authenticated session, checks history/booking permissions,
 passes real results into final synthesis, and records per-step outcomes. The
-Streamlit screen displays the plan and provides a separate booking continuation.
+Streamlit screen displays the plan and performs appointment booking from the chat flow only.
 The history tool reads saved records; live medical search now retrieves PubMed/WHO
-evidence. Neither a proposed booking nor a failed search is recorded as a completed action. See the README's OpenAI
+evidence. A booking is recorded as completed only after the transactional appointment tool succeeds. See the README's OpenAI
 multi-step planning section for configuration, acceptance flow and limitations.
+
+For a simple explicit request such as "book a cardiologist appointment", if the
+OpenAI planner is unavailable or returns invalid output, the application builds a
+minimal locally validated plan for the requested specialty. The same authorization,
+four-hour availability rule, transactional booking, and final appointment details
+apply; complex or ambiguous requests still require the model planner and may ask
+for clarification.
 
 ### Implemented automated scheduling
 
 The existing booking entry point now delegates calendar discovery and atomic booking
 to `ScheduleRepository`, directly or through the private `ScheduleAPIClient`.
 Recurring doctor working windows and days off constrain availability. Planner goals
-carry date/time/name preferences; appointment execution proposes concrete slots.
-Confirmation keeps the existing appointments table and user views. SQLite transactions
-prevent conflicting doctor/patient bookings, and request keys make retries idempotent.
+carry date/time/name preferences; appointment execution discovers and books the earliest
+concrete slot. If a concurrent booking makes that slot unavailable, execution retries the
+next discovered slot. The result includes the booked date, time, doctor, specialty,
+timezone, and duration. SQLite transactions prevent conflicting doctor/patient bookings,
+and request keys make retries idempotent.
 The bundled HTTP service shares the application's database; no third-party schedule
 provider has been configured. See the README for its contract and startup steps.
 
@@ -466,7 +517,7 @@ live-search summarization, and memory-based standalone-question resolution.
 Action extraction and final operational summarization now have named prompt constants
 in `src/llm/task_prompts.py`; the planner composes action rules into its one structured
 request. Chaining remains dependency-validated by `PlanExecution`, with authorization
-and appointment confirmation enforced in application code. Prompt requirements and
+and appointment authorization enforced in application code. Prompt requirements and
 file-to-stage mapping are documented in the README. Integration tests run the real
 LangChain composition with offline retrieval/model fixtures, not merely prompt string
 checks. Live model quality and clinical accuracy require separate evaluation.
@@ -486,7 +537,8 @@ The ingestion pipeline skips duplicates by SHA-256, appends new content, reports
 partial multi-file success and per-file errors, preserves source/page/chunk metadata,
 and leaves the previously committed index intact on embedding/save failures. It
 rejects oversized, encrypted, malformed and textless PDFs. OCR remains outside scope.
-Only authenticated staff see the shared-library upload UI; patient clinical records
+Every authenticated attendant and doctor can use the shared-library upload UI; access
+is not limited by attendant-to-patient assignment. Patient clinical records
 and patient summary vectors remain in their separate storage workflows.
 
 Legacy public `index.pkl` persistence is replaced with JSON metadata plus native FAISS
@@ -533,9 +585,9 @@ evidence, not clinician validation or an estimate of real-world medical accuracy
 ### Implemented: performance analysis dashboard — BRD §§6–7
 
 `PerformanceRepository` aggregates privacy-preserving telemetry for a selected UTC
-window. Actual booking-confirmation events supply booking rates and outcome/latency
+window. Actual successful booking events supply booking rates and outcome/latency
 trends; appointment-discovery proposals are excluded from the booking denominator.
-Successful confirmations win over repeated outcomes for the same scoped request,
+Successful bookings win over repeated outcomes for the same scoped request,
 otherwise the latest outcome is retained. Deduplication precedes date filtering.
 Remote uncertain outcomes remain explicit and can be resolved by successful retries.
 All booking calls now emit an outcome, including exceptions and missing caller-supplied

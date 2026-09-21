@@ -5,6 +5,7 @@ python -m scripts.manage_attendants create --username attendant.one --first-name
 python -m scripts.manage_attendants assign --username attendant.one --patient patient-002
 python -m scripts.manage_attendants revoke --username attendant.one --patient patient-002
 python -m scripts.manage_attendants disable --username attendant.one
+python -m scripts.manage_attendants reset-password --username attendant.one
 Passwords are entered at a hidden prompt, never as command-line arguments.
 """
 import argparse
@@ -48,11 +49,25 @@ def manage_access(database_path, username, action, patient_ids=()):
             raise ValueError('Unsupported administrative action.')
 
 
+def reset_password(database_path, username, password):
+    if len(password) < 12:
+        raise ValueError('Attendant passwords must be at least 12 characters.')
+    store = SQLiteStore(database_path)
+    with store._connect() as c:
+        result = c.execute(
+            "UPDATE login_details SET password_hash=?, is_active=1, updated_at=CURRENT_TIMESTAMP "
+            "WHERE username=? AND user_type='attendant'",
+            (hash_password(password), username.strip().lower()),
+        )
+        if result.rowcount != 1:
+            raise ValueError('Attendant account not found.')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database', default=SQLITE_DB_PATH)
     subs = parser.add_subparsers(dest='action', required=True)
-    for action in ('create', 'assign', 'revoke', 'disable', 'enable'):
+    for action in ('create', 'assign', 'revoke', 'disable', 'enable', 'reset-password'):
         sub = subs.add_parser(action)
         sub.add_argument('--username', required=True)
         if action in ('create', 'assign', 'revoke'):
@@ -62,11 +77,14 @@ if __name__ == '__main__':
             sub.add_argument('--last-name', required=True)
     args = parser.parse_args()
     try:
-        if args.action == 'create':
+        if args.action in ('create', 'reset-password'):
             password = getpass('New attendant password (at least 12 characters): ')
             if getpass('Confirm password: ') != password:
                 raise ValueError('Passwords do not match.')
-            create_attendant(args.database, args.username, args.first_name, args.last_name, password, args.patient)
+            if args.action == 'create':
+                create_attendant(args.database, args.username, args.first_name, args.last_name, password, args.patient)
+            else:
+                reset_password(args.database, args.username, password)
         else:
             manage_access(args.database, args.username, args.action, getattr(args, 'patient', ()))
         print('Attendant account/access updated.')

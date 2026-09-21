@@ -3,6 +3,9 @@
 
 def migrate(connection):
     connection.execute('BEGIN IMMEDIATE')
+    appointment_columns = {r[1] for r in connection.execute('PRAGMA table_info(appointments)')}
+    if 'consultation_type' not in appointment_columns:
+        connection.execute('ALTER TABLE appointments ADD COLUMN consultation_type TEXT')
     connection.execute('''CREATE TABLE IF NOT EXISTS attendants (
         attendant_id TEXT PRIMARY KEY, first_name TEXT NOT NULL, last_name TEXT NOT NULL
     )''')
@@ -73,3 +76,13 @@ def migrate(connection):
         resolution_reason TEXT
     )''')
     connection.execute('CREATE INDEX IF NOT EXISTS idx_patient_alerts ON patient_alerts(patient_id,status)')
+    connection.execute('''CREATE TABLE IF NOT EXISTS patient_documents (
+        document_id TEXT PRIMARY KEY,
+        patient_id TEXT NOT NULL REFERENCES patients(patient_id) ON DELETE CASCADE,
+        filename TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        content BLOB NOT NULL,
+        uploaded_by TEXT NOT NULL REFERENCES login_details(login_id),
+        uploaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(patient_id, sha256)
+    )''')
