@@ -32,8 +32,10 @@ class SQLiteStore:
                     first_name TEXT,
                     last_name TEXT,
                     gender TEXT,
+                    age INTEGER,
                     date_of_birth TEXT,
                     address TEXT,
+                    email TEXT,
                     mobile_number TEXT,
                     home_number TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -235,22 +237,24 @@ class SQLiteStore:
                 """
                 INSERT INTO patients (
                     patient_id, first_name, last_name, gender, date_of_birth,
-                    address, mobile_number, home_number, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+                    age, address, email, mobile_number, home_number, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
                 ON CONFLICT(patient_id) DO UPDATE SET
                     first_name = excluded.first_name,
                     last_name = excluded.last_name,
                     gender = excluded.gender,
+                    age = excluded.age,
                     date_of_birth = excluded.date_of_birth,
                     address = excluded.address,
+                    email = excluded.email,
                     mobile_number = excluded.mobile_number,
                     home_number = excluded.home_number,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     values["patient_id"], values["first_name"], values["last_name"],
-                    values["gender"], values["date_of_birth"], values["address"],
-                    values["mobile_number"], values["home_number"], values["created_at"],
+                    values["gender"], values["date_of_birth"], values["age"], values["address"],
+                    values["email"], values["mobile_number"], values["home_number"], values["created_at"],
                 ),
             )
         return self.get_patient(patient.patient_id)  # type: ignore[return-value]

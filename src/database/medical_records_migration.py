@@ -3,6 +3,11 @@
 
 def migrate(connection):
     connection.execute('BEGIN IMMEDIATE')
+    patient_columns = {r[1] for r in connection.execute('PRAGMA table_info(patients)')}
+    if 'age' not in patient_columns:
+        connection.execute('ALTER TABLE patients ADD COLUMN age INTEGER')
+    if 'email' not in patient_columns:
+        connection.execute('ALTER TABLE patients ADD COLUMN email TEXT')
     appointment_columns = {r[1] for r in connection.execute('PRAGMA table_info(appointments)')}
     if 'consultation_type' not in appointment_columns:
         connection.execute('ALTER TABLE appointments ADD COLUMN consultation_type TEXT')

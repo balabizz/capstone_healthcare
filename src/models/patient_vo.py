@@ -25,8 +25,10 @@ class PatientVO:
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     gender: Optional[str] = None
+    age: Optional[int] = None
     date_of_birth: Optional[str] = None  # ISO date string: YYYY-MM-DD
     address: Optional[str] = None
+    email: Optional[str] = None
     mobile_number: Optional[str] = None
     home_number: Optional[str] = None
     created_at: Optional[str] = None  # ISO datetime
