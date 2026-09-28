@@ -78,9 +78,21 @@ class PatientSummaryStore:
         return self.index(requester_patient_id=requester_patient_id, bundle=bundle, summary=summary)
 
     def search(self, *, requester_patient_id, patient_id, query, k=5):
+        self.history.require_access(requester_patient_id, patient_id)
+        result = self._search(patient_id, query, k)
+        self.history.require_access(requester_patient_id, patient_id)
+        return result
+
+    def search_for_staff(self, *, staff_type, staff_id, patient_id, query, k=5):
+        self.history.require_staff_access(staff_type, staff_id, patient_id)
+        result = self._search(patient_id, query, k)
+        self.history.require_staff_access(staff_type, staff_id, patient_id)
+        return result
+
+    def _search(self, patient_id, query, k=5):
         import faiss
         import numpy as np
-        current = self._snapshot(requester_patient_id, patient_id)
+        current = self.history._retrieve_unchecked(patient_id)
         if not isinstance(query, str) or not query.strip() or len(query) > 2000 or not 1 <= k <= 20:
             raise ValueError('Enter a search query up to 2000 characters; k must be 1–20.')
         with self.history.store._connect() as c:
@@ -94,7 +106,7 @@ class PatientSummaryStore:
         if vector.shape[1] != index.d:
             raise ValueError('Embedding dimensions changed. Rebuild the summary.')
         scores, ids = index.search(vector, min(k, index.ntotal))
-        latest = self._snapshot(requester_patient_id, patient_id)
+        latest = self.history._retrieve_unchecked(patient_id)
         if latest['source_fingerprint'] != row['fingerprint']:
             return {'status': 'stale', 'matches': []}
         chunks = json.loads(row['chunks_json'])

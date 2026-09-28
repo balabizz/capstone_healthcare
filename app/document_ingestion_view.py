@@ -33,6 +33,11 @@ def render_patient_documents(username, database_path, repository=None):
                             st.info(f'{uploaded.name}: already saved for this patient.')
                         else:
                             st.success(f'{uploaded.name}: saved to {labels[patient_id]}.')
+                        if result.get('history_notes_added'):
+                            st.info(f"Added {result['history_notes_added']} source notes to patient history. Rebuild the patient summary to refresh vector search.")
+                        if result.get('pages_without_text'):
+                            st.warning('Some PDF pages have no extractable text and need OCR before they can be searched: ' +
+                                       ', '.join(map(str, result['pages_without_text'])))
                     except ValueError as error:
                         st.error(f'{uploaded.name}: {error}')
             documents = repository.list_documents(username, patient_id)

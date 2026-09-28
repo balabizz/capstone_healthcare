@@ -233,3 +233,14 @@ def test_repeated_invalid_plan_stops_after_two_calls():
     with pytest.raises(ValueError):
         Planner(client).plan('Book for father')
     assert client.plan.call_count == 2
+
+
+@pytest.mark.parametrize('specialty', ['ophthalmologist', 'ophthalmology'])
+def test_ophthalmology_appointment_uses_local_plan(specialty):
+    client = Mock()
+    client.plan.side_effect = AssertionError('Simple booking should not require an API call')
+    plan = Planner(client).plan(f'Book an appointment with an {specialty}')
+    assert [g.name for g in plan.goals] == [
+        'patient_lookup', 'specialist_discovery', 'appointment', 'final_summary']
+    assert plan.goals[1].specialty.lower() == specialty
+    client.plan.assert_not_called()

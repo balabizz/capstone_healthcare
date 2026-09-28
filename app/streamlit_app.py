@@ -60,6 +60,58 @@ def render_family(profile, execution):
                     st.error("Enter a valid registered patient ID.")
 
 
+def render_staff_patient_summary(profile, user_type, execution):
+    staff_id = profile.get('doctor_id') if user_type == 'doctor' else profile.get('attendant_id')
+    try:
+        patients = execution.list_staff_patients(user_type, staff_id)
+    except (ValueError, PermissionError) as error:
+        st.session_state.pop('staff_patient_summary', None)
+        st.error(str(error))
+        return
+    if not patients:
+        st.session_state.pop('staff_patient_summary', None)
+        st.info('No patients are available for this staff account.')
+        return
+    labels = {
+        patient['patient_id']: f"{patient['first_name']} {patient['last_name']} [{patient['patient_id']}]"
+        for patient in patients
+    }
+    selected = st.selectbox('Patient for health-record summary', list(labels),
+                            format_func=labels.get, key='staff_summary_patient')
+    scope = (user_type, staff_id, selected)
+    if st.session_state.get('staff_summary_scope') != scope:
+        st.session_state.pop('staff_patient_summary', None)
+        st.session_state.staff_summary_scope = scope
+    request = st.text_input('Summary request', value='Summarize the overall patient health records and condition.',
+                            key='staff_summary_request')
+    if st.button('Generate patient health summary', key='staff_summary_submit'):
+        st.session_state.pop('staff_patient_summary', None)
+        try:
+            result = execution.summarize_patient_for_staff(
+                staff_type=user_type, staff_id=staff_id, patient_id=selected, request=request)
+            st.session_state.staff_patient_summary = result
+        except (ValueError, PermissionError) as error:
+            st.error(str(error))
+    result = st.session_state.get('staff_patient_summary')
+    if result and result['history_snapshot']['subject_patient_id'] == selected:
+        try:
+            execution.validate_staff_summary_snapshot(user_type, staff_id, result['history_snapshot'])
+        except (ValueError, PermissionError) as error:
+            st.session_state.pop('staff_patient_summary', None)
+            st.error(str(error))
+            return
+        st.write(result['answer'])
+        with st.expander('Structured patient records used'):
+            snapshot = result['history_snapshot']
+            for category in ('records', 'prescriptions', 'alerts'):
+                st.write(category.capitalize())
+                st.json(snapshot[category])
+            st.json(snapshot['coverage'])
+        with st.expander('Patient vector-summary matches used'):
+            st.write(result['patient_summary']['status'])
+            st.json(result['patient_summary']['matches'])
+
+
 def main():
     """Run the Streamlit application."""
     goal_execution = GoalExecution()
@@ -139,6 +191,8 @@ def main():
         render_model_evaluation(authenticated_user['user_type'], goal_execution)
         from app.performance_view import render_performance_dashboard
         render_performance_dashboard(authenticated_user['user_type'], goal_execution)
+        with st.expander('Patient health-record summary', expanded=True):
+            render_staff_patient_summary(profile, authenticated_user['user_type'], goal_execution)
 
     from app.request_trace_view import render_scenario_testing
     render_scenario_testing()

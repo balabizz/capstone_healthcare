@@ -64,6 +64,49 @@ class GoalExecution:
             self._patient_summaries = PatientSummaryStore(self.patient_history)
         return self._patient_summaries
 
+    def list_staff_patients(self, staff_type, staff_id):
+        if staff_type not in ('doctor', 'attendant') or not staff_id:
+            raise PermissionError('An authenticated staff member is required.')
+        with self._connect() as connection:
+            if staff_type == 'doctor':
+                if not connection.execute(
+                    "SELECT 1 FROM login_details WHERE doctor_id=? AND user_type='doctor' AND is_active=1",
+                    (staff_id,)).fetchone():
+                    raise PermissionError('An active doctor account is required.')
+                rows = connection.execute(
+                    'SELECT patient_id, first_name, last_name, date_of_birth FROM patients '
+                    'ORDER BY last_name, first_name, patient_id').fetchall()
+            else:
+                rows = connection.execute(
+                    'SELECT p.patient_id, p.first_name, p.last_name, p.date_of_birth '
+                    'FROM patients p JOIN attendant_patients a ON a.patient_id=p.patient_id '
+                    'JOIN login_details l ON l.attendant_id=a.attendant_id '
+                    "WHERE l.attendant_id=? AND l.user_type='attendant' AND l.is_active=1 "
+                    'ORDER BY p.last_name, p.first_name, p.patient_id', (staff_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def summarize_patient_for_staff(self, *, staff_type, staff_id, patient_id, request):
+        bundle = self.patient_history.retrieve_for_staff(
+            staff_type=staff_type, staff_id=staff_id, patient_id=patient_id)
+        try:
+            vector = self.patient_summaries.search_for_staff(
+                staff_type=staff_type, staff_id=staff_id, patient_id=patient_id,
+                query=request)
+        except (ValueError, RuntimeError):
+            vector = {'status': 'unavailable', 'matches': []}
+        self.validate_staff_summary_snapshot(staff_type, staff_id, bundle)
+        from src.llm.planning_client import PlanningClient
+        answer = PlanningClient().summarize_staff_patient_context(bundle, vector['matches'], request)
+        self.validate_staff_summary_snapshot(staff_type, staff_id, bundle)
+        return {'answer': answer, 'history_snapshot': bundle, 'patient_summary': vector}
+
+    def validate_staff_summary_snapshot(self, staff_type, staff_id, snapshot):
+        """Recheck access and source freshness before generation or display."""
+        current = self.patient_history.retrieve_for_staff(
+            staff_type=staff_type, staff_id=staff_id, patient_id=snapshot['subject_patient_id'])
+        if current['source_fingerprint'] != snapshot['source_fingerprint']:
+            raise ValueError('Patient records changed. Generate a new patient health summary.')
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
@@ -129,7 +172,7 @@ class GoalExecution:
         return result
 
     def answer_patient_question(self, question, *, requester_patient_id=None, patient_id=None):
-        """Fetch authorized dialogue at execution time, never accept a model-supplied scope."""
+        """Resolve dialogue, retrieve current patient vectors and ground the chat answer."""
         if not requester_patient_id:
             return self.answer_question(question)
         patient_id = patient_id or requester_patient_id
@@ -137,16 +180,56 @@ class GoalExecution:
             self.patient_history.require_access(requester_patient_id, patient_id)
         check_access()
         history = self.conversations.retrieve(requester_patient_id, patient_id, question)
-        result = (self.answer_question(question, chat_history=history, check_access=check_access)
-                  if history else self.answer_question(question))
+        standalone = question
+        if history:
+            from src.llm.conversation_context import resolve_question
+            resolved = resolve_question(question, history, allow_patient_records=True)
+            check_access()
+            if resolved['clarification']:
+                return {'question': question, 'answer': resolved['clarification'],
+                        'source_documents': [], 'needs_clarification': True,
+                        'context_subject_patient_id': patient_id}
+            standalone = resolved['question']
+        try:
+            summary = self.patient_summaries.search(
+                requester_patient_id=requester_patient_id, patient_id=patient_id,
+                query=standalone)
+        except PermissionError:
+            raise
+        except (ValueError, RuntimeError):
+            summary = {'status': 'unavailable', 'matches': []}
         check_access()
+        snapshot = self.patient_history.retrieve(
+            requester_patient_id=requester_patient_id, patient_id=patient_id)
+        if summary['status'] == 'ready' and summary['snapshot']['source_fingerprint'] != snapshot['source_fingerprint']:
+            summary = {'status': 'stale', 'matches': []}
+        has_summary = summary['status'] == 'ready' and bool(summary['matches'])
+        has_records = any(snapshot.get(key) for key in ('records', 'prescriptions', 'alerts'))
+        context = {'snapshot': snapshot, 'matches': summary['matches'] if has_summary else []} if has_summary or has_records else None
+        result = (self.answer_question(standalone, patient_context=context, check_access=check_access)
+                  if context else self.answer_question(standalone))
+        check_access()
+        if context:
+            current = self.patient_history.retrieve(
+                requester_patient_id=requester_patient_id, patient_id=patient_id)
+            if current['source_fingerprint'] != context['snapshot']['source_fingerprint']:
+                raise ValueError('Medical records changed while answering. Rebuild the patient summary and retry.')
+        result['question'] = question
+        if standalone != question:
+            result['standalone_question'] = standalone
+        result['patient_summary_status'] = summary['status']
+        result['history_snapshot'] = snapshot
+        if not has_summary:
+            result['answer'] += ('\n\nPatient-summary context was not used (' + summary['status'] +
+                                 '). Use Rebuild patient summary to refresh it.')
         # Even with no dialogue, a family-scoped query may contain personal information.
         from src.agents.memory_trace import memory_trace
         result['memory_trace'] = memory_trace('medical_question_context',history)
         result['context_subject_patient_id'] = patient_id
         return result
 
-    def answer_question(self, question: str, *, chat_history=None, check_access=None) -> Dict[str, Any]:
+    def answer_question(self, question: str, *, chat_history=None, check_access=None,
+                        patient_context=None) -> Dict[str, Any]:
         """Answer with local RAG, or live medical evidence when no index exists."""
         from src.chains.rag_chain import RAGChain
         from src.vector_store.faiss_store import FAISSStore
@@ -156,10 +239,38 @@ class GoalExecution:
         except ValueError as error:
             if not str(error).startswith('No reference index is available.'):
                 raise
-            return self._answer_without_reference_index(question, chat_history, check_access)
-        chain = RAGChain(vectorstore)
+            if not patient_context:
+                return self._answer_without_reference_index(question, chat_history, check_access)
+            vectorstore = None
+        if check_access:
+            check_access()
+        search_bundle = None
+        search_attempted = False
+        if patient_context:
+            import re
+            if re.search(r'\b(treatment|treatments|manage|management|advice|advise|what helps|what should|plan)\b', question, re.I):
+                from src.llm.planning_client import PlanningClient
+                search_attempted = True
+                try:
+                    topic = PlanningClient().medical_search_topic(question, patient_context['snapshot'])
+                    if check_access:
+                        check_access()
+                    search_bundle = self.medical_search.search(topic)
+                except (ValueError, RuntimeError):
+                    search_bundle = None
+                if check_access:
+                    check_access()
+            patient_context = {**patient_context, 'medical_search': search_bundle}
+        chain = (RAGChain(vectorstore, patient_context=patient_context)
+                 if patient_context else RAGChain(vectorstore))
         result = (chain.query_with_history(question, chat_history, check_access=check_access)
                   if chat_history else chain.query(question))
+        if search_bundle is not None:
+            result['medical_search'] = search_bundle
+        if search_attempted:
+            from src.llm.medical_search_summary import usable_sources
+            if not search_bundle or not usable_sources(search_bundle):
+                result['answer'] += '\n\nNo usable live medical evidence was obtained for this advice request.'
         return result
 
     def _answer_without_reference_index(self, question, chat_history=None, check_access=None):
@@ -233,7 +344,7 @@ class GoalExecution:
                 row = connection.execute(
                     """
                     SELECT p.patient_id, p.first_name, p.last_name, p.gender,
-                           p.date_of_birth
+                           p.date_of_birth, p.age
                     FROM login_details AS l JOIN patients AS p ON p.patient_id = l.patient_id
                     WHERE l.username = ? AND l.user_type = ? AND l.is_active = 1
                     """,
@@ -253,7 +364,9 @@ class GoalExecution:
             return None
         profile = dict(row)
         if user_type == "patient":
-            profile["age"] = PatientVO.from_dict(profile).age()
+            calculated_age = PatientVO.from_dict(profile).calculate_age()
+            if calculated_age is not None:
+                profile["age"] = calculated_age
         return profile
 
     def get_specialties(self) -> List[str]:

@@ -21,12 +21,21 @@ SCHEMA = {'type': 'object', 'properties': {
     'required': ['question', 'clarification'], 'additionalProperties': False}
 
 
-def resolve_question(question, history, client=None):
+def resolve_question(question, history, client=None, *, allow_patient_records=False):
     # Bound context at this boundary too, even for direct/injected callers.
     turns = [{'query': r['query'][:1500], 'answer': r['answer'][:2500],
               'truncated': bool(r.get('truncated')) or len(r['query']) > 1500 or len(r['answer']) > 2500}
              for r in history[-6:]]
-    result = (client or PlanningClient()).plan(PROMPT,
+    prompt = PROMPT
+    if allow_patient_records:
+        prompt = PROMPT.replace(
+            'If the referent remains ambiguous, or the question requires current patient records\n'
+            'instead of general medical references, return a short clarification and no question.',
+            'If the referent remains ambiguous, return a short clarification and no question.\n'
+            'Questions about the selected patient\'s records may be rewritten: a separate\n'
+            'authorized patient-summary retrieval follows. Preserve that intent without\n'
+            'inventing patient facts or treating dialogue as clinical evidence.')
+    result = (client or PlanningClient()).plan(prompt,
         json.dumps({'current_question': question, 'historical_turns': turns}), SCHEMA)
     if not isinstance(result, dict) or set(result) != {'question', 'clarification'}:
         raise ValueError('Could not resolve the follow-up. Please state the medical topic explicitly.')

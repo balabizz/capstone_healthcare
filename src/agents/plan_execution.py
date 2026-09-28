@@ -190,9 +190,10 @@ class PlanExecution:
                         search_bundle = answer['medical_search']
                     result = {'status': 'needs_input' if answer.get('needs_clarification') else 'success',
                               'message': answer['answer'], 'context_subject_patient_id': context_subject_id,
+                              'patient_summary_status': answer.get('patient_summary_status'),
                               'search_evidence': answer.get('medical_search')}
                     if question_history is not None:
-                        result['history_snapshot'] = question_history
+                        result['history_snapshot'] = answer.get('history_snapshot', question_history)
                 else:
                     if context_subject_id:
                         self.execution.patient_history.require_access(patient_id, context_subject_id)
@@ -270,6 +271,13 @@ class PlanExecution:
         answer = final['message'] if final['status'] == 'success' else 'Summary generation failed. See step results below.'
         if outcomes:
             answer += '\n\n' + outcomes
+        for step in results.values():
+            summary_status = step.get('patient_summary_status')
+            if step['status'] == 'success' and summary_status and summary_status != 'ready':
+                notice = ('Patient-summary context was not used (' + summary_status +
+                          '). Use Rebuild patient summary to refresh it.')
+                if notice not in answer:
+                    answer += '\n\n' + notice
         if history_bundle:
             from src.llm.history_summary import coverage_notice
             answer += '\n\n' + coverage_notice(history_bundle)

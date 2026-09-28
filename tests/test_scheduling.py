@@ -271,3 +271,16 @@ def test_today_and_tomorrow_are_converted_in_clinic_timezone(schedule):
     execution.schedule = schedule
     result = PlanExecution(execution, lambda evidence: 'Booked').run(Planner.validate(payload), patient_id='p1')
     assert result['booking']['slot']['date'] == '2030-01-07'
+
+
+@pytest.mark.parametrize('specialty', ['Ophthalmologist', 'Ophthalmology', ' ophthalmology '])
+def test_ophthalmology_discovery_and_booking(schedule, specialty):
+    with schedule.store._connect() as connection:
+        connection.execute("UPDATE doctors SET speciality = 'Ophthalmologist' WHERE doctor_id='d1'")
+    doctors = schedule.specialists(specialty)
+    assert [doctor['doctor_id'] for doctor in doctors] == ['d1']
+    slots = schedule.discover(requester_patient_id='p1', patient_id='p1', specialty=specialty,
+                              date_from='2030-01-07', date_to='2030-01-07')
+    assert slots and all(slot['doctor_id'] == 'd1' for slot in slots)
+    result = booking(schedule, doctor=slots[0]['doctor_id'], slot=slots[0]['time'])
+    assert result['status'] == 'booked'

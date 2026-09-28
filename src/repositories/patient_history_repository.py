@@ -24,6 +24,24 @@ class PatientHistoryRepository:
         if not self.store.get_patient(patient_id):
             raise ValueError('Patient record not found.')
 
+    def require_staff_access(self, staff_type, staff_id, patient_id):
+        if staff_type not in ('doctor', 'attendant') or not staff_id or not patient_id:
+            raise PermissionError('An authenticated staff member and patient are required.')
+        with self.store._connect() as connection:
+            if staff_type == 'doctor':
+                authorized = connection.execute(
+                    "SELECT 1 FROM login_details WHERE doctor_id=? AND user_type='doctor' AND is_active=1",
+                    (staff_id,)).fetchone()
+            else:
+                authorized = connection.execute(
+                    "SELECT 1 FROM login_details l JOIN attendant_patients a ON a.attendant_id=l.attendant_id "
+                    "WHERE l.attendant_id=? AND l.user_type='attendant' AND l.is_active=1 AND a.patient_id=?",
+                    (staff_id, patient_id)).fetchone()
+        if not authorized:
+            raise PermissionError('This staff account is not authorized for the selected patient.')
+        if not self.store.get_patient(patient_id):
+            raise ValueError('Patient record not found.')
+
     @staticmethod
     def prescription_timing(row, today):
         try:
@@ -43,6 +61,15 @@ class PatientHistoryRepository:
 
     def retrieve(self, *, requester_patient_id, patient_id):
         self.require_access(requester_patient_id, patient_id)
+        return self._retrieve_unchecked(patient_id)
+
+    def retrieve_for_staff(self, *, staff_type, staff_id, patient_id):
+        self.require_staff_access(staff_type, staff_id, patient_id)
+        bundle = self._retrieve_unchecked(patient_id)
+        self.require_staff_access(staff_type, staff_id, patient_id)
+        return bundle
+
+    def _retrieve_unchecked(self, patient_id):
         now = datetime.now(ZoneInfo(SCHEDULE_TIMEZONE))
         # One read transaction keeps category counts and rows at the same snapshot.
         with self.store._connect() as c:
@@ -90,5 +117,4 @@ class PatientHistoryRepository:
                     active_total = c.execute("SELECT COUNT(*) FROM patient_alerts WHERE patient_id=? AND status='active'",
                                              (patient_id,)).fetchone()[0]
                     bundle['coverage'][category]['active_omitted'] = active_total - sum(r['status'] == 'active' for r in included)
-        self.require_access(requester_patient_id, patient_id)
         return bundle

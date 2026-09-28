@@ -217,6 +217,7 @@ class Planner:
             ('pediatrician', 'Pediatrician'), ('pediatrics', 'Pediatrics'),
             ('neurologist', 'Neurologist'), ('neurology', 'Neurology'),
             ('orthopedist', 'Orthopedist'), ('orthopedics', 'Orthopedics'),
+            ('ophthalmologist', 'Ophthalmologist'), ('ophthalmology', 'Ophthalmology'),
         )
         specialty = next((canonical for phrase, canonical in specialties if re.search(
             r'\b' + re.escape(phrase) + r'\b', text)), None)

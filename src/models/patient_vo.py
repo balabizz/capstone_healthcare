@@ -41,7 +41,7 @@ class PatientVO:
         ln = (self.last_name or "").strip()
         return f"{fn} {ln}".strip()
 
-    def age(self) -> Optional[int]:
+    def calculate_age(self) -> Optional[int]:
         """Return computed age in years if date_of_birth is available, else None.
 
         Note: date_of_birth is stored as an ISO string in this VO. Parsing is

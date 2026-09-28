@@ -9,7 +9,7 @@ class RAGChain:
     """Retrieval Augmented Generation chain."""
 
     def __init__(self, vectorstore, model: str = LLM_MODEL, 
-                 temperature: float = LLM_TEMPERATURE):
+                 temperature: float = LLM_TEMPERATURE, *, patient_context=None):
         """
         Initialize RAG chain.
         
@@ -21,7 +21,10 @@ class RAGChain:
         from langchain.chains import RetrievalQA
         from langchain.chat_models import ChatOpenAI
         self.vectorstore = vectorstore
+        self.patient_context = patient_context
         self.llm = ChatOpenAI(model_name=model, temperature=temperature)
+        if patient_context:
+            return
         self.chain = RetrievalQA.from_chain_type(
             llm=self.llm,
             chain_type="stuff",
@@ -40,6 +43,27 @@ class RAGChain:
         Returns:
             Dictionary with question, answer, and source documents
         """
+        if getattr(self, 'patient_context', None):
+            from src.llm.task_prompts import patient_qa_prompt
+            import json
+            documents = (self.vectorstore.as_retriever(search_kwargs={'k': 5}).invoke(question)
+                         if self.vectorstore is not None else [])
+            # Keep patient data out of the reference retrieval query and source list.
+            excerpts = [{'chunk': m['chunk'], 'text': m['text']}
+                        for m in self.patient_context['matches'][:5]]
+            from src.llm.medical_search_summary import usable_sources
+            search = self.patient_context.get('medical_search')
+            live_sources = usable_sources(search) if search else []
+            snapshot = {key: value for key, value in self.patient_context['snapshot'].items()
+                        if key != 'subject_patient_id'}
+            messages = patient_qa_prompt().format_messages(
+                question=question, patient_context=json.dumps(excerpts),
+                patient_records=json.dumps(snapshot),
+                live_evidence=json.dumps(live_sources),
+                context='\n\n'.join(d.page_content for d in documents) or 'No reference excerpts retrieved.')
+            answer = self.llm.invoke(messages)
+            return {'question': question, 'answer': answer.content,
+                    'source_documents': documents}
         result = self.chain({"query": question})
         return {
             "question": question,

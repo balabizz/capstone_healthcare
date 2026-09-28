@@ -1,7 +1,13 @@
 """Text processing and chunking utilities."""
 
 from typing import List
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ModuleNotFoundError as exc:
+    if exc.name != "langchain_text_splitters":
+        raise
+    # Support the older LangChain version pinned by this project.
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
 from src.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 

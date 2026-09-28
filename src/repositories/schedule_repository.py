@@ -16,7 +16,8 @@ ALIASES = {'gp': 'general physician', 'general practice': 'general physician',
            'neurologist': 'neurology', 'urologist': 'urology',
            'psychiatrist': 'psychiatry', 'oncologist': 'oncology', 'cancer specialist': 'oncology',
            'gastroenterologist': 'gastroenterology', 'endocrinologist': 'endocrinology',
-           'pulmonologist': 'pulmonology', 'orthopedist': 'orthopedics'}
+           'pulmonologist': 'pulmonology', 'orthopedist': 'orthopedics',
+           'ophthalmologist': 'ophthalmology'}
 
 
 def specialty_key(value):

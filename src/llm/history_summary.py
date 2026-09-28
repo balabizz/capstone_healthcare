@@ -22,6 +22,10 @@ Return the requested JSON sections, with each statement citing source keys:
 history:<history_id>, prescription:<prescription_id>, alert:<alert_id>.
 Use diagnoses_and_treatments for diagnosis records; clinical_notes for standalone notes.
 Use empty arrays for categories with no records. Include important recorded dates.
+Keep uploaded PDF notes in clinical_notes even if their text mentions diagnoses,
+medications or allergies. Their text does not create structured diagnosis,
+prescription or alert entries. Use only the source IDs allowed for each section.
+Include every retrieved prescription source at least once.
 Preserve uncertainty, contradictory entries and attribution (e.g. patient-reported).
 Prescriptions are recorded orders, NOT proof of current use. Preserve name, dosage,
 frequency, dates and relevant instructions exactly when present; never invent missing

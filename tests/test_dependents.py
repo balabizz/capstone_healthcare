@@ -65,4 +65,6 @@ def test_relationships_and_medical_permission(service, monkeypatch):
     with pytest.raises(PermissionError):
         service.execute(goal, patient_id='caller')
     repo.set_permission('father', 'caller', 'view_medical', True)
-    assert service.execute(goal, patient_id='caller')['answer'] == 'General information'
+    result = service.execute(goal, patient_id='caller')
+    assert result['answer'].startswith('General information')
+    assert result['patient_summary_status'] == 'missing'
