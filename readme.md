@@ -1517,3 +1517,23 @@ Generate a public domain under the service's networking settings after deploymen
 
 The configured `/_stcore/health` check verifies the Streamlit server is running;
 it does not validate model credentials, data initialization or full app workflows.
+
+
+### Notes by doctor
+
+Doctor accounts have a **Notes by doctor** section. Select a patient to review past
+notes with doctor names and timestamps, including existing doctor-associated notes
+from earlier visits. Each new visit adds a note to `medical_history`; previous notes
+remain available. The author is the signed-in doctor, and every read and save checks
+that the doctor account is active. Access follows the existing doctor policy (all
+registered patients). Repeated submission of the same save request does not add a
+duplicate note.
+
+**Save doctor note and update summary** saves the original note first, then summarizes
+the current patient history and replaces that patient's FAISS summary vectors in
+`healthcare.db` / `patient_summary_vectors`. This uses the configured model and
+embedding API. Notes never enter the shared reference index. Patient chat and staff
+summary search can retrieve the refreshed patient vectors. Existing evidence limits
+and truncation disclosures apply to summaries; the past-notes panel retains the full
+original text. If summary generation or embedding fails, the note stays saved and a
+warning offers **Refresh patient-summary embeddings** to retry without another note.

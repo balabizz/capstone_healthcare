@@ -46,6 +46,24 @@ class GoalExecution:
             self.schedule = ScheduleAPIClient(SCHEDULE_API_URL, SCHEDULE_API_TOKEN)
 
     @property
+    def doctor_notes(self):
+        from src.repositories.doctor_note_repository import DoctorNoteRepository
+        return DoctorNoteRepository(self.database_path)
+
+    def save_doctor_note(self, *, doctor_id, patient_id, notes, request_id):
+        saved = self.doctor_notes.save(doctor_id=doctor_id, patient_id=patient_id,
+                                      notes=notes, request_id=request_id)
+        try:
+            count = self.patient_summaries.rebuild_for_staff(
+                staff_type='doctor', staff_id=doctor_id, patient_id=patient_id)
+            return {'note': saved, 'embedding_status': 'indexed', 'chunks': count}
+        except PermissionError:
+            raise
+        except Exception:
+            # Saving the original note succeeds even if the external model is unavailable.
+            return {'note': saved, 'embedding_status': 'failed'}
+
+    @property
     def request_traces(self):
         from src.repositories.request_trace_repository import RequestTraceRepository
         return RequestTraceRepository(self.patient_history)

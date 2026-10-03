@@ -51,9 +51,20 @@ class PatientSummaryStore:
         return matrix
 
     def index(self, *, requester_patient_id, bundle, summary):
+        return self._index(bundle, summary, lambda: self._snapshot(requester_patient_id, bundle['subject_patient_id']))
+
+    def rebuild_for_staff(self, *, staff_type, staff_id, patient_id, summarizer=None):
+        from src.llm.planning_client import PlanningClient
+        def snapshot():
+            return self.history.retrieve_for_staff(staff_type=staff_type, staff_id=staff_id, patient_id=patient_id)
+        bundle = snapshot()
+        summary = (summarizer or PlanningClient().summarize_history)(bundle)
+        return self._index(bundle, summary, snapshot)
+
+    def _index(self, bundle, summary, snapshot):
         import faiss
         patient = bundle['subject_patient_id']
-        current = self._snapshot(requester_patient_id, patient)
+        current = snapshot()
         if current['source_fingerprint'] != bundle['source_fingerprint']:
             raise ValueError('Medical records changed. Rebuild the summary.')
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 100000:
@@ -63,7 +74,7 @@ class PatientSummaryStore:
         vectors = self._matrix(self.embeddings.embed(chunks), len(chunks))
         index = faiss.IndexFlatIP(vectors.shape[1])
         index.add(vectors)
-        if self._snapshot(requester_patient_id, patient)['source_fingerprint'] != bundle['source_fingerprint']:
+        if snapshot()['source_fingerprint'] != bundle['source_fingerprint']:
             raise ValueError('Medical records changed during indexing. Rebuild the summary.')
         with self.history.store._connect() as c:
             c.execute('INSERT OR REPLACE INTO patient_summary_vectors VALUES (?,?,?,?,?,?)',

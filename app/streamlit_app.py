@@ -209,6 +209,10 @@ def main():
         with st.expander('Patient health-record summary', expanded=True):
             render_staff_patient_summary(profile, authenticated_user['user_type'], goal_execution)
 
+    if authenticated_user['user_type'] == 'doctor':
+        from app.doctor_notes_view import render_doctor_notes
+        render_doctor_notes(profile, goal_execution)
+
     from app.request_trace_view import render_scenario_testing
     render_scenario_testing()
 
