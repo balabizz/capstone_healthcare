@@ -1,0 +1,12 @@
+EHR/Patient Database
+        |
+        | patient records and history
+        v
+Embedding pipeline
+        |
+        v
+Vector Database
+        |
+        | semantic retrieval
+        v
+RAG assistant

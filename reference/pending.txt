@@ -1,0 +1,18 @@
+| Requirement and source | Coverage | Remaining gap |
+|---|---|---|
+| **Multi-step planning** — BRD §1; notebook Step 12 | Partial | Planner uses keyword rules for appointments and medical questions. It does not fully decompose requests into patient lookup, history retrieval, specialist discovery, search, and final summarization. |
+| **Automated appointment discovery and booking** — BRD objective and §2 | Partial | Local availability checks and booking work. Specialty, doctor, date, and time require manual selection. No Doctor Schedule API integration or doctor-specific working calendars. |
+| **Add/update medical records** — BRD objective and §2 | Missing workflow | Database tables exist, but there are no application tools or screens for attendants to add/update diagnoses, treatments, or unstructured clinical notes. No attendant role exists. |
+| **Retrieve and summarize patient history** — BRD objective and §4 | Missing | The assistant does not retrieve the selected patient’s diagnoses, treatments, prescriptions, or alerts and summarize them with the LLM. |
+| **Search current medical information** — BRD objective and §2 | Missing | No WHO, Medline, or web-search integration. Existing RAG uses a local document index, so it cannot establish that treatment information is current. |
+| **Vector storage of patient summaries** — BRD §2 | Missing | Vector-store helpers exist, but there is no patient-summary indexing pipeline or patient-scoped summary retrieval. |
+| **Long-term patient memory** — BRD §2 | Missing | No persistent conversational memory or patient-context retrieval across sessions. Execution logs are not conversational memory. |
+| **Conversational context** — notebook Step 11 | Partial | Chat history is displayed in Streamlit, but it is not passed into the active medical-question flow. Follow-up questions do not reliably inherit prior context. |
+| **Task-specific prompts and chaining** — BRD §3; notebook Steps 9 and 14 | Partial | RAG uses the library’s default QA chain. No application-defined prompts for planning, clinical-history summarization, action extraction, or memory-based patient context. |
+| **Document upload and ingestion** — notebook Steps 3–8 | Partial | PDF loading, chunking, embedding, and indexing utilities exist. No integrated upload/indexing screen or ingestion command; setup relies on manual code examples. |
+| **Source evidence in answers** — notebook Steps 9, 14, and 16 | Partial | The UI has a source-document section, but the retrieval chain does not enable `return_source_documents`, so the current result normally supplies an empty source list. |
+| **Model evaluation** — BRD §6; notebook Step 16 | Missing | No QAEvalChain or equivalent, evaluation dataset, or measured accuracy, relevance, faithfulness, and hallucination results. |
+| **Performance analysis dashboard** — BRD §§6–7 | Partial | Events record status and duration, but there are no aggregated booking-success rates, response-quality metrics, or evaluation charts. |
+| **Real-time appointment tracking** — BRD §7 | Partial | Appointment lists and doctor schedules render from SQLite. No automatic refresh or live updates across users. |
+| **Memory traces and planning breakdowns** — BRD §8 | Partial | Basic tool logs appear in the UI. No actual memory traces, detailed subgoal/dependency view, or dedicated scenario-testing interface. |
+| **Responsible AI** — notebook responsible-AI guidance | Partial | Family permissions exist, but there is no explicit application-level grounding/abstention policy or evaluation of unsafe and unsupported responses. Authentication is also demo-grade: passwords are compared directly against values stored in `password_hash`. |

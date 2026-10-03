@@ -1,0 +1,26 @@
+Patient
+
+Username: aarav.sharma
+Password: patient
+User type: patient
+Patient test account
+
+Username: testpatient
+Password: patient
+User type: patient
+Doctor
+
+Username: amit.sharma
+Password: doctor
+User type: doctor
+Doctor test account
+
+Username: testdoctor
+Password: doctor
+User type: doctor
+
+
+| Username | Password |
+|---|---|
+| `attendant.one` | `9029kE7rozE14Zz0ffJl` |
+| `attendant.two` | `kUi3Q3tAH1ezfqaEth-0` |

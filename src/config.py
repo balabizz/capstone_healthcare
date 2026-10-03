@@ -1,0 +1,66 @@
+"""Configuration module for the healthcare capstone project."""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Project paths
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+RAW_DATA_DIR = DATA_DIR / "raw"
+PROCESSED_DATA_DIR = DATA_DIR / "processed"
+EMBEDDINGS_DIR = DATA_DIR / "embeddings"
+NOTEBOOKS_DIR = PROJECT_ROOT / "notebooks"
+SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", str(DATA_DIR / "healthcare.db"))
+
+# Ensure directories exist~
+for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, EMBEDDINGS_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+# LLM Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-3.5-turbo")
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
+# Dedicated model supporting strict JSON-schema output for planning.
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "gpt-4o-mini")
+
+# Vector Database Configuration
+FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", str(EMBEDDINGS_DIR / "faiss"))
+
+# Document Processing Configuration
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
+MAX_DOCUMENTS = int(os.getenv("MAX_DOCUMENTS", "1000"))
+REFERENCE_DOCUMENT_UPLOAD_ROLES = ("doctor", "attendant")
+
+# Application Settings
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Streamlit Settings
+STREAMLIT_SERVER_PORT = int(os.getenv("STREAMLIT_SERVER_PORT", "8501"))
+
+# Model Parameters
+EMBEDDING_MODEL = "text-embedding-ada-002"
+
+# Calendar times and optional private Doctor Schedule HTTP service
+SCHEDULE_TIMEZONE = os.getenv("SCHEDULE_TIMEZONE", "Australia/Sydney")
+SCHEDULE_API_URL = os.getenv("SCHEDULE_API_URL", "")
+SCHEDULE_API_TOKEN = os.getenv("SCHEDULE_API_TOKEN", "")
+
+# Live medical publication search currently uses WHO only.
+NCBI_BASE_URL = os.getenv("NCBI_BASE_URL", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils")
+WHO_PUBLICATIONS_URL = os.getenv("WHO_PUBLICATIONS_URL", "https://www.who.int/api/hubs/publications")
+NCBI_EMAIL = os.getenv("NCBI_EMAIL", "")
+NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")
+MEDICAL_SEARCH_DAYS = int(os.getenv("MEDICAL_SEARCH_DAYS", "730"))
+
+# Separate from the public document embedding configuration.
+PATIENT_SUMMARY_EMBEDDING_MODEL = os.getenv('PATIENT_SUMMARY_EMBEDDING_MODEL', 'text-embedding-3-small')
+
+# Independent read-only appointment panel polling.
+APPOINTMENT_REFRESH_SECONDS = int(os.getenv('APPOINTMENT_REFRESH_SECONDS', '5'))
+if not 2 <= APPOINTMENT_REFRESH_SECONDS <= 60:
+    raise ValueError('APPOINTMENT_REFRESH_SECONDS must be between 2 and 60.')

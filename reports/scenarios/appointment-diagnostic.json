@@ -1,0 +1,246 @@
+{
+  "run_at": "2026-09-20T23:11:34.982829+00:00",
+  "planner_model": "gpt-4o-mini",
+  "scope": "Live planning, real executor and local repositories; synthetic temporary data and fixture medical responses.",
+  "results": [
+    {
+      "checks": {
+        "expected_subgoals_present": true,
+        "no_booking_written": true,
+        "awaits_confirmation": true
+      },
+      "scenario": "Father appointment",
+      "mode": "Synthetic database; live OpenAI planner; fixture reference answers and final summary; no external medical search.",
+      "plan": {
+        "relationship": "father",
+        "clarification": null,
+        "goals": [
+          {
+            "step": "1",
+            "goal": "patient_lookup",
+            "tool": "patients.resolve",
+            "depends_on": [],
+            "query": "Resolve father",
+            "specialty": null,
+            "preferences": null
+          },
+          {
+            "step": "2",
+            "goal": "specialist_discovery",
+            "tool": "doctors.find_specialist",
+            "depends_on": [
+              "1"
+            ],
+            "query": "Find a nephrologist",
+            "specialty": "Nephrology",
+            "preferences": null
+          },
+          {
+            "step": "3",
+            "goal": "appointment",
+            "tool": "appointments.discover",
+            "depends_on": [
+              "1",
+              "2"
+            ],
+            "query": "Prepare father's appointment",
+            "specialty": null,
+            "preferences": null
+          },
+          {
+            "step": "4",
+            "goal": "final_summary",
+            "tool": "responses.summarize",
+            "depends_on": [
+              "1",
+              "2",
+              "3"
+            ],
+            "query": "Summarize all outcomes",
+            "specialty": null,
+            "preferences": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "status": "success",
+          "message": "Patient resolved from your account selection.",
+          "id": "1",
+          "goal": "patient_lookup",
+          "tool": "patients.resolve",
+          "duration_ms": 2,
+          "depends_on": [],
+          "blocked_by": []
+        },
+        {
+          "status": "success",
+          "message": "Matching specialists found.",
+          "specialty": "Nephrology",
+          "doctors": [
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology"
+            }
+          ],
+          "id": "2",
+          "goal": "specialist_discovery",
+          "tool": "doctors.find_specialist",
+          "duration_ms": 0,
+          "depends_on": [
+            "1"
+          ],
+          "blocked_by": []
+        },
+        {
+          "status": "awaiting_confirmation",
+          "message": "Earliest matching slots found. Confirm a proposed slot to book; nothing is booked yet.",
+          "slots": [
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology",
+              "date": "2026-09-21",
+              "time": "09:30",
+              "timezone": "Australia/Sydney",
+              "duration_minutes": 30
+            },
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology",
+              "date": "2026-09-21",
+              "time": "10:00",
+              "timezone": "Australia/Sydney",
+              "duration_minutes": 30
+            },
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology",
+              "date": "2026-09-21",
+              "time": "10:30",
+              "timezone": "Australia/Sydney",
+              "duration_minutes": 30
+            },
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology",
+              "date": "2026-09-21",
+              "time": "11:00",
+              "timezone": "Australia/Sydney",
+              "duration_minutes": 30
+            },
+            {
+              "doctor_id": "demo-doctor",
+              "first_name": "Demo",
+              "last_name": "Doctor",
+              "speciality": "Nephrology",
+              "date": "2026-09-21",
+              "time": "11:30",
+              "timezone": "Australia/Sydney",
+              "duration_minutes": 30
+            }
+          ],
+          "id": "3",
+          "goal": "appointment",
+          "tool": "appointments.discover",
+          "duration_ms": 3,
+          "depends_on": [
+            "1",
+            "2"
+          ],
+          "blocked_by": []
+        },
+        {
+          "status": "success",
+          "message": "patient_lookup: success\nspecialist_discovery: success\nappointment: awaiting_confirmation",
+          "id": "4",
+          "goal": "final_summary",
+          "tool": "responses.summarize",
+          "duration_ms": 0,
+          "depends_on": [
+            "1",
+            "2",
+            "3"
+          ],
+          "blocked_by": []
+        }
+      ],
+      "memory": [
+        {
+          "stage": "planner",
+          "status": "empty",
+          "selection": "Recent continuity plus keyword-related older turns; scoped to requester and patient.",
+          "count": 0,
+          "turns": []
+        }
+      ],
+      "expected_goals": [
+        "patient_lookup",
+        "specialist_discovery",
+        "appointment"
+      ],
+      "missing_expected_goals": [],
+      "clarification": null,
+      "synthetic_bookings_written": 0,
+      "status": "passed",
+      "planning_attempts": [
+        {
+          "relationship": "father",
+          "clarification": null,
+          "steps": [
+            {
+              "id": "1",
+              "name": "patient_lookup",
+              "query": "Resolve father",
+              "specialty": null,
+              "depends_on": [],
+              "preferences": null
+            },
+            {
+              "id": "2",
+              "name": "specialist_discovery",
+              "query": "Find a nephrologist",
+              "specialty": "Nephrology",
+              "depends_on": [
+                "1"
+              ],
+              "preferences": null
+            },
+            {
+              "id": "3",
+              "name": "appointment",
+              "query": "Prepare father's appointment",
+              "specialty": null,
+              "depends_on": [
+                "1",
+                "2"
+              ],
+              "preferences": null
+            },
+            {
+              "id": "4",
+              "name": "final_summary",
+              "query": "Summarize all outcomes",
+              "specialty": null,
+              "depends_on": [
+                "1",
+                "2",
+                "3"
+              ],
+              "preferences": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

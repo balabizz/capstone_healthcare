@@ -1,0 +1,132 @@
+{
+  "run_at": "2026-09-20T23:03:01.925136+00:00",
+  "planner_model": "gpt-4o-mini",
+  "scope": "Live planning, real executor and local repositories; synthetic temporary data and fixture medical responses.",
+  "results": [
+    {
+      "checks": {
+        "expected_subgoals_present": true,
+        "no_booking_written": true
+      },
+      "scenario": "Remembered follow-up",
+      "mode": "Synthetic database; live OpenAI planner; fixture reference answers and final summary; no external medical search.",
+      "plan": {
+        "relationship": null,
+        "clarification": null,
+        "goals": [
+          {
+            "step": "patient_lookup",
+            "goal": "patient_lookup",
+            "tool": "patients.resolve",
+            "depends_on": [],
+            "query": "Resolve patient",
+            "specialty": null,
+            "preferences": null
+          },
+          {
+            "step": "medical_question",
+            "goal": "medical_question",
+            "tool": "medical_rag.query",
+            "depends_on": [
+              "patient_lookup"
+            ],
+            "query": "What are the complications of diabetes?",
+            "specialty": null,
+            "preferences": null
+          },
+          {
+            "step": "final_summary",
+            "goal": "final_summary",
+            "tool": "responses.summarize",
+            "depends_on": [
+              "patient_lookup",
+              "medical_question"
+            ],
+            "query": "Summarize all outcomes",
+            "specialty": null,
+            "preferences": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "status": "success",
+          "message": "Patient resolved from your account selection.",
+          "id": "patient_lookup",
+          "goal": "patient_lookup",
+          "tool": "patients.resolve",
+          "duration_ms": 2,
+          "depends_on": [],
+          "blocked_by": []
+        },
+        {
+          "status": "success",
+          "message": "Synthetic reference response: the medical answer model was not invoked.",
+          "context_subject_patient_id": "demo-requester",
+          "id": "medical_question",
+          "goal": "medical_question",
+          "tool": "medical_rag.query",
+          "duration_ms": 4,
+          "depends_on": [
+            "patient_lookup"
+          ],
+          "blocked_by": []
+        },
+        {
+          "status": "success",
+          "message": "patient_lookup: success\nmedical_question: success",
+          "id": "final_summary",
+          "goal": "final_summary",
+          "tool": "responses.summarize",
+          "duration_ms": 1,
+          "depends_on": [
+            "patient_lookup",
+            "medical_question"
+          ],
+          "blocked_by": []
+        }
+      ],
+      "memory": [
+        {
+          "stage": "planner",
+          "status": "supplied",
+          "selection": "Recent continuity plus keyword-related older turns; scoped to requester and patient.",
+          "count": 1,
+          "turns": [
+            {
+              "turn_id": "synthetic-turn",
+              "created_at": "2026-09-20T23:02:58.510Z",
+              "selection_reason": "recent_continuity",
+              "truncated": false,
+              "question_characters": 22,
+              "answer_characters": 74
+            }
+          ]
+        },
+        {
+          "stage": "medical_question_context",
+          "status": "supplied",
+          "selection": "Recent continuity plus keyword-related older turns; scoped to requester and patient.",
+          "count": 1,
+          "turns": [
+            {
+              "turn_id": "synthetic-turn",
+              "created_at": "2026-09-20T23:02:58.510Z",
+              "selection_reason": "recent_continuity",
+              "truncated": false,
+              "question_characters": 22,
+              "answer_characters": 74
+            }
+          ]
+        }
+      ],
+      "expected_goals": [
+        "medical_question"
+      ],
+      "missing_expected_goals": [],
+      "clarification": null,
+      "synthetic_bookings_written": 0,
+      "status": "passed"
+    }
+  ]
+}
