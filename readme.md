@@ -1499,3 +1499,21 @@ as 100%. The CLI now records explicit structured planner attempts for synthetic
 scenarios to help diagnose invalid outputs; it does not record private chain-of-thought.
 
 Patient document uploads: Doctors and attendants can use **Patient documents — upload and download** to select a patient and save original PDFs (up to 20 MB / 200 pages) to the patient_documents table in SQLite. Attendants can access assigned patients only. Saved files can be downloaded from the selected patient's document list; duplicate PDFs are detected per patient. These files are stored as patient attachments and are not indexed into shared reference search. The separate Reference documents section remains available for general reference material.
+
+
+### Railway deployment
+
+Deploy the repository root from the `develop` branch using Railpack. The root
+`railway.json` starts `app/streamlit_app.py` with Streamlit on `0.0.0.0` and the
+Railway-provided `PORT`; no root `app.py` is needed. `.python-version` selects
+Python 3.11 for the pinned NumPy, pandas and FAISS dependencies. Remove any
+conflicting `RAILPACK_PYTHON_VERSION` service variable.
+
+Set `OPENAI_API_KEY` in Railway service variables. For persistent data, attach a
+volume at `/data` and set `SQLITE_DB_PATH=/data/healthcare.db` and
+`FAISS_INDEX_PATH=/data/faiss`. A fresh volume does not contain local accounts,
+appointments or reference documents; initialize the intended demo data separately.
+Generate a public domain under the service's networking settings after deployment.
+
+The configured `/_stcore/health` check verifies the Streamlit server is running;
+it does not validate model credentials, data initialization or full app workflows.
