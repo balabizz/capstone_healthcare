@@ -1,6 +1,7 @@
 """Streamlit web application for healthcare RAG system."""
 
 import sys
+import logging
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -115,14 +116,27 @@ def render_staff_patient_summary(profile, user_type, execution):
 
 def main():
     """Run the Streamlit application."""
-    goal_execution = GoalExecution()
-    event_repository = AgentEventRepository(goal_execution.database_path)
-    planner = Planner()
     st.set_page_config(
         page_title="Agentic Healthcare Assistant",
         page_icon="🏥",
         layout="wide",
     )
+
+    try:
+        goal_execution = GoalExecution()
+        event_repository = AgentEventRepository(goal_execution.database_path)
+        planner = Planner()
+    except Exception as error:
+        error_id = uuid4().hex[:12]
+        logging.getLogger(__name__).exception(
+            "Application initialization failed (reference %s)", error_id
+        )
+        st.error(
+            f"Application initialization failed ({type(error).__name__}). "
+            f"Reference: {error_id}. Please contact the application administrator."
+        )
+        st.info("Administrator: check the server deployment logs for this reference.")
+        return
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
