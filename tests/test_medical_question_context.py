@@ -173,3 +173,13 @@ def test_context_boundary_is_bounded():
     history = json.loads(client.plan.call_args.args[1])['historical_turns']
     assert len(history) == 6
     assert all(len(r['query']) == 1500 and len(r['answer']) == 2500 and r['truncated'] for r in history)
+
+
+def test_unexpected_medical_failure_logs_reference_without_private_content(service, caplog):
+    service.answer_patient_question = Mock(side_effect=RuntimeError('PRIVATE_RECORD_OR_KEY'))
+    result = PlanExecution(service, lambda rows: rows[-1]['message']).run(medical_plan(), patient_id='caller')
+    assert 'reference ' in result['answer']
+    assert 'medical_rag.query' in caplog.text
+    assert 'RuntimeError' in caplog.text
+    assert 'PRIVATE_RECORD_OR_KEY' not in caplog.text
+    assert 'PRIVATE_RECORD_OR_KEY' not in str(result)

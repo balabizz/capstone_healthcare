@@ -4,6 +4,8 @@ from time import perf_counter
 from uuid import uuid4
 from datetime import date, datetime, timedelta
 import re
+import logging
+import traceback
 from src.agents.planner import Plan, Planner
 
 
@@ -250,8 +252,18 @@ class PlanExecution:
                 else:
                     message = str(error)
                 result = {'status': 'needs_input' if isinstance(error, ValueError) else 'denied', 'message': message}
-            except Exception:
-                result = {'status': 'failed', 'message': 'This step could not be completed. Please try again.'}
+            except Exception as error:
+                error_id = uuid4().hex[:12]
+                # Record stack locations, never exception text or patient request contents.
+                frames = traceback.extract_tb(error.__traceback__)
+                locations = ' -> '.join(f'{frame.filename}:{frame.lineno} ({frame.name})' for frame in frames)
+                logging.getLogger(__name__).error(
+                    'Goal failed: tool=%s error_type=%s reference=%s stack=%s',
+                    goal.tool, type(error).__name__, error_id, locations)
+                result = {'status': 'failed',
+                          'message': f'This step could not be completed. Please contact the administrator with reference {error_id}.',
+                          'error_reference': error_id}
+
             result.update({'id': goal.goal_id, 'goal': goal.name, 'tool': goal.tool,
                            'duration_ms':round((perf_counter()-start)*1000),
                            'depends_on':list(goal.depends_on),
