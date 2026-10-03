@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Agentic Healthcare Assistant - Project Overview</title>
+<style>
+@page { size: A4; margin: 18mm; }
+body { font-family: Segoe UI, Arial, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #1b1f24; }
+h1 { font-size: 22pt; color: #0b4f6c; border-bottom: 3px solid #0b4f6c; padding-bottom: 6px; }
+h2 { font-size: 14pt; color: #0b4f6c; margin-top: 20px; border-bottom: 1px solid #c8d3da; padding-bottom: 3px; }
+h3 { font-size: 11.5pt; margin-bottom: 4px; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+th, td { border: 1px solid #c8d3da; padding: 5px 7px; text-align: left; vertical-align: top; font-size: 9.5pt; }
+th { background: #e7f0f4; }
+code { background: #f1f4f6; padding: 0 3px; font-size: 9.5pt; }
+.flow { background: #f1f4f6; border: 1px solid #c8d3da; padding: 10px; font-family: Consolas, monospace; font-size: 9pt; white-space: pre; }
+tr, li { page-break-inside: avoid; }
+</style></head><body>
+
+<h1>Agentic Healthcare Assistant</h1>
+<p>Project overview: flow, services, AI/RAG design, and security model.</p>
+
+<h2>1. What it is</h2>
+<p>A Streamlit application for patients, doctors and attendants. Patients ask medical questions, view their own or a relative's records, and book appointments. Doctors and attendants review patient summaries, upload reference documents, and manage records. An LLM planner converts each request into small steps (goals), which the application validates and executes in dependency order.</p>
+
+<h2>2. Request flow</h2>
+<div class="flow">User request (Streamlit)
+   |
+Planner: OpenAI returns a strict JSON plan  --&gt;  plan validation
+   |
+PlanExecution: goals run in dependency order
+   patient_lookup --&gt; history_retrieval ------------------+
+        |                                                  |
+        +--&gt; specialist_discovery --&gt; appointment --------+
+   medical_question (RAG over reference documents) -------+--&gt; final_summary
+   medical_search (WHO + PubMed) -------------------------+       |
+                                                              Answer, citations,
+                                                              notices</div>
+<ol>
+<li><b>Planning</b> (<code>src/agents/planner.py</code>): OpenAI returns a strict JSON plan. Allowed goals: <code>patient_lookup</code>, <code>history_retrieval</code>, <code>specialist_discovery</code>, <code>appointment</code>, <code>medical_question</code>, <code>medical_search</code>, <code>conversation_recall</code>, <code>final_summary</code>. The plan is validated before running.</li>
+<li><b>Execution</b> (<code>src/agents/plan_execution.py</code>): goals run in dependency order; a failed goal blocks only its dependents. <code>final_summary</code> always runs and reports failures.</li>
+<li><b>Final answer</b>: combines history summary, RAG answer, publication findings, OpenAI treatment suggestions and booking result, plus coverage and search notices.</li>
+</ol>
+
+<h2>3. Services and endpoints</h2>
+<table>
+<tr><th>Purpose</th><th>Service</th><th>Where</th></tr>
+<tr><td>Chat, planning, summaries</td><td>OpenAI <code>POST /v1/chat/completions</code> (default model <code>gpt-4o-mini</code>, <code>PLANNER_MODEL</code>)</td><td><code>src/llm/planning_client.py</code></td></tr>
+<tr><td>Embeddings</td><td>OpenAI <code>POST /v1/embeddings</code></td><td><code>src/vector_store/patient_summaries.py</code></td></tr>
+<tr><td>Medical literature</td><td>PubMed via NCBI E-utilities (<code>esearch.fcgi</code>, <code>efetch.fcgi</code>)</td><td><code>src/tools/medical_search.py</code></td></tr>
+<tr><td>Medical literature</td><td>WHO publications OData API (<code>/api/hubs/publications</code>)</td><td><code>src/tools/medical_search.py</code></td></tr>
+<tr><td>Scheduling</td><td>Private HTTP API: <code>POST /specialists</code>, <code>/slots</code>, <code>/bookings</code> (bearer-token auth, SQLite-backed)</td><td><code>src/scheduling/api.py</code></td></tr>
+<tr><td>Storage</td><td>SQLite: patients, history, prescriptions, alerts, appointments, conversations, events, summary vectors</td><td><code>data/healthcare.db</code></td></tr>
+<tr><td>Deployment</td><td>Streamlit on Railway; health check <code>/_stcore/health</code></td><td><code>railway.json</code></td></tr>
+</table>
+
+<h2>4. AI, RAG and embeddings</h2>
+<h3>Embeddings</h3>
+<ul>
+<li>Reference documents: <code>text-embedding-ada-002</code> (<code>EMBEDDING_MODEL</code>).</li>
+<li>Patient summaries: <code>text-embedding-3-small</code> (<code>PATIENT_SUMMARY_EMBEDDING_MODEL</code>).</li>
+<li>Vectors are L2-normalised, so inner product behaves as cosine similarity.</li>
+</ul>
+<h3>Vector stores (FAISS)</h3>
+<ul>
+<li><b>Reference index</b> (<code>FAISSStore</code>): one shared index, persisted atomically in SQLite as serialized FAISS bytes plus JSON metadata (no pickle). Records the embedding model and rebuilds if it changes.</li>
+<li><b>Patient summaries</b> (<code>PatientSummaryStore</code>): one <code>IndexFlatIP</code> per patient in table <code>patient_summary_vectors</code>, tied to a fingerprint of the source records; a changed record makes the index stale and forces a rebuild.</li>
+<li>A <code>ChromaDBStore</code> exists but is not part of the main flow.</li>
+</ul>
+<h3>Document ingestion</h3>
+<p>PDF, then page extraction, then chunks (1000 characters, 200 overlap; <code>CHUNK_SIZE</code>, <code>CHUNK_OVERLAP</code>), then embeddings, then the FAISS index. Only doctors and attendants can upload.</p>
+<h3>RAG</h3>
+<ul>
+<li>Retrieves the top 5 chunks from the reference index and answers only from that context; returns a fixed "no reference answer" message when nothing is retrieved.</li>
+<li>Patient questions also receive the structured patient snapshot, the top 5 summary excerpts, and live publication evidence.</li>
+<li>Follow-up questions are rewritten into standalone questions using chat history.</li>
+<li>With no reference index, the app uses live search, then a general OpenAI answer.</li>
+</ul>
+<h3>Live medical search (grounded evidence)</h3>
+<ul>
+<li>An LLM extracts a de-identified topic from the question and recorded conditions; only that topic leaves the app (no names or IDs).</li>
+<li>Last 730 days; retracted papers excluded; responses size-limited; redirects blocked; PubMed calls rate limited.</li>
+<li>The summary uses a JSON schema permitting only retrieved source IDs; the app attaches verified links itself.</li>
+<li>When publications are found, OpenAI treatment suggestions are appended (labelled as general knowledge). When none are found, only the OpenAI suggestions are shown.</li>
+</ul>
+<h3>Doctor treatment plan</h3>
+<p>The doctor enters a condition. The app combines the patient's stored history, summary vectors and live search findings, and OpenAI drafts a plan. The doctor makes the final decision.</p>
+<h3>Other concepts</h3>
+<ul>
+<li><b>Structured output:</b> strict JSON schemas for plans, summaries and findings, followed by validation.</li>
+<li><b>Source-attributed summarization:</b> statements cite record IDs (<code>history:&lt;id&gt;</code>, etc.); completeness is checked (every prescription, every active alert).</li>
+<li><b>Prompt-injection defence:</b> patient, publication and user text are treated as untrusted data.</li>
+<li><b>Conversation memory:</b> turns saved per requester and subject, recalled only with access.</li>
+<li><b>Evaluation:</b> cases in <code>evaluation/</code> and <code>src/evaluation/</code>; a performance dashboard reports results.</li>
+</ul>
+
+<h2>5. Access and privacy</h2>
+<ul>
+<li>Roles: patient, doctor, attendant (login records in SQLite).</li>
+<li>Family access via dependents and permission grants; appointment requests for a relative are booked under the logged-in patient without that check.</li>
+<li>Staff see only authorised patients; access and record freshness are re-checked before and after generation.</li>
+<li>Bookings use idempotency keys to avoid double-booking; an event log records goal starts, completions and bookings.</li>
+</ul>
+
+<h2>6. Project layout</h2>
+<table>
+<tr><th>Path</th><th>Content</th></tr>
+<tr><td><code>app/</code></td><td>Streamlit views (doctor notes, document upload, evaluation, performance, live appointments)</td></tr>
+<tr><td><code>src/agents/</code></td><td>Planner, plan and goal execution, conversation flow</td></tr>
+<tr><td><code>src/llm/</code></td><td>OpenAI client, prompts, summary renderers</td></tr>
+<tr><td><code>src/tools/</code></td><td>Live medical search</td></tr>
+<tr><td><code>src/vector_store/, src/embeddings/, src/data_processing/</code></td><td>RAG pipeline</td></tr>
+<tr><td><code>src/repositories/, src/scheduling/</code></td><td>Data access and scheduling API</td></tr>
+<tr><td><code>scripts/</code></td><td>Seeding, ingestion, scenario runs, model evaluation</td></tr>
+<tr><td><code>tests/</code></td><td>Unit tests (pytest)</td></tr>
+</table>
+
+<h2>7. Running</h2>
+<ul>
+<li>App: <code>python -m streamlit run app/streamlit_app.py</code>; requires <code>OPENAI_API_KEY</code> in <code>.env</code>.</li>
+<li>Scheduling API: <code>python -m src.scheduling.api --port 8765</code>; needs <code>SCHEDULE_API_TOKEN</code> (24+ characters) and <code>SCHEDULE_API_URL</code>.</li>
+<li>Optional: <code>NCBI_EMAIL</code>, <code>NCBI_API_KEY</code>, <code>MEDICAL_SEARCH_DAYS</code>.</li>
+</ul>
+</body></html>

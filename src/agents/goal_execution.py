@@ -118,6 +118,35 @@ class GoalExecution:
         self.validate_staff_summary_snapshot(staff_type, staff_id, bundle)
         return {'answer': answer, 'history_snapshot': bundle, 'patient_summary': vector}
 
+    def treatment_plan_for_staff(self, *, staff_type, staff_id, patient_id, disease):
+        """Combine stored history with live publication search to draft a treatment plan."""
+        from src.llm.medical_search_summary import search_notice, usable_sources
+        from src.llm.planning_client import PlanningClient
+        bundle = self.patient_history.retrieve_for_staff(
+            staff_type=staff_type, staff_id=staff_id, patient_id=patient_id)
+        try:
+            vector = self.patient_summaries.search_for_staff(
+                staff_type=staff_type, staff_id=staff_id, patient_id=patient_id, query=disease)
+        except (ValueError, RuntimeError):
+            vector = {'status': 'unavailable', 'matches': []}
+        client = PlanningClient()
+        # Only a de-identified general topic leaves the application for the search providers.
+        topic = client.medical_search_topic(
+            f'Treatment and management of {disease}', bundle)
+        search_bundle, search_summary = None, 'No live publication evidence was retrieved.'
+        try:
+            search_bundle = self.medical_search.search(topic)
+            if usable_sources(search_bundle):
+                search_summary = (client.summarize_medical_search(search_bundle)
+                                  + '\n' + search_notice(search_bundle))
+        except (ValueError, RuntimeError):
+            pass
+        self.validate_staff_summary_snapshot(staff_type, staff_id, bundle)
+        plan = client.staff_treatment_plan(bundle, vector['matches'], disease, search_summary)
+        self.validate_staff_summary_snapshot(staff_type, staff_id, bundle)
+        return {'answer': plan, 'topic': topic, 'search_summary': search_summary,
+                'history_snapshot': bundle, 'patient_summary': vector, 'medical_search': search_bundle}
+
     def validate_staff_summary_snapshot(self, staff_type, staff_id, snapshot):
         """Recheck access and source freshness before generation or display."""
         current = self.patient_history.retrieve_for_staff(

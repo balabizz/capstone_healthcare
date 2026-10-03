@@ -7,9 +7,15 @@ class ConversationFlow:
         self.execution, self.planner = execution, planner
         self.memory_traces = []
 
-    def subject(self, requester, dependent_id=None, relationship=None):
-        return (self.execution.dependents.resolve(requester, relationship, dependent_id)
-                if dependent_id or relationship else requester)
+    def subject(self, requester, dependent_id=None, relationship=None, plan=None):
+        try:
+            return (self.execution.dependents.resolve(requester, relationship, dependent_id)
+                    if dependent_id or relationship else requester)
+        except ValueError:
+            # Bookings for an unlinked relative are made under the requester.
+            if plan is not None and any(g.name == 'appointment' for g in plan.goals):
+                return requester
+            raise
 
     def plan(self, query, *, requester, dependent_id=None):
         self.memory_traces = []
@@ -17,7 +23,7 @@ class ConversationFlow:
         initial = self.planner.plan(query, selected_family=bool(dependent_id))
         if not requester:
             return initial, None
-        subject = self.subject(requester, dependent_id, initial.relationship)
+        subject = self.subject(requester, dependent_id, initial.relationship, initial)
         try:
             context = self.execution.conversations.retrieve(requester, subject, query)
         except PermissionError:
@@ -27,7 +33,7 @@ class ConversationFlow:
         if not context:
             return initial, subject
         plan = self.planner.plan(query, selected_family=bool(dependent_id), conversation_context=context)
-        if self.subject(requester, dependent_id, plan.relationship) != subject:
+        if self.subject(requester, dependent_id, plan.relationship, plan) != subject:
             self.memory_traces[-1]['status'] = 'discarded_subject_change'
             # Never transfer remembered preferences/clinical statements to another subject.
             return initial, subject

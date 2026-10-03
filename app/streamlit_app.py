@@ -94,6 +94,29 @@ def render_staff_patient_summary(profile, user_type, execution):
             st.session_state.staff_patient_summary = result
         except (ValueError, PermissionError) as error:
             st.error(str(error))
+    if user_type == 'doctor':
+        st.subheader('Treatment plan (history + live medical search)')
+        disease = st.text_input('Disease / condition', key='staff_plan_disease')
+        if st.button('Generate treatment plan', key='staff_plan_submit'):
+            st.session_state.pop('staff_treatment_plan', None)
+            if len(disease.strip()) < 3:
+                st.error('Enter a disease or condition.')
+            else:
+                try:
+                    with st.spinner('Reviewing history and searching medical literature...'):
+                        st.session_state.staff_treatment_plan = dict(
+                            execution.treatment_plan_for_staff(
+                                staff_type=user_type, staff_id=staff_id, patient_id=selected, disease=disease.strip()),
+                            patient_id=selected)
+                except (ValueError, PermissionError) as error:
+                    st.error(str(error))
+        plan = st.session_state.get('staff_treatment_plan')
+        if plan and plan['patient_id'] == selected:
+            st.write(plan['answer'])
+            with st.expander('Live search evidence'):
+                st.caption(f"External search topic: {plan['topic']}")
+                st.write(plan['search_summary'])
+
     result = st.session_state.get('staff_patient_summary')
     if result and result['history_snapshot']['subject_patient_id'] == selected:
         try:

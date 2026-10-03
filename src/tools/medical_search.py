@@ -190,6 +190,14 @@ class MedicalSearch:
         except (ProviderError, ValueError, KeyError, TypeError, ET.ParseError) as error:
             providers.append({'provider': 'WHO', 'status': 'failed', 'returned': 0,
                               'error': str(error) if isinstance(error, ProviderError) else 'Provider returned malformed or unsupported data.'})
+        try:
+            found, count = self._pubmed(query, first, last)
+            sources.extend(found)
+            providers.append({'provider': 'PubMed', 'status': 'success' if found else 'no_results',
+                              'returned': len(found), 'matching_count': count})
+        except (ProviderError, ValueError, KeyError, TypeError, ET.ParseError) as error:
+            providers.append({'provider': 'PubMed', 'status': 'failed', 'returned': 0,
+                              'error': str(error) if isinstance(error, ProviderError) else 'Provider returned malformed or unsupported data.'})
         unique = {s['id']: s for s in sources}
         failures = sum(p['status'] == 'failed' for p in providers)
         status = 'failed' if failures else 'success' if unique else 'no_results'

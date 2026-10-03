@@ -29,22 +29,38 @@ class PlanExecution:
         summary_index_status = None
         history_bundle = None
         search_bundle = None
+        lookup_subject = None
+        unresolved_error = None
         for goal in plan.goals:
             start = perf_counter()
+            if lookup_subject is not None:
+                subject_id = lookup_subject
             if request_id:
                 self.execution.events.log(request_id=request_id, patient_id=patient_id,
                     goal_id=goal.goal_id, event_type='goal_started', tool_name=goal.tool, status='started')
             try:
                 failed_dependency = any(results[d]['status'] != 'success' for d in goal.depends_on)
-                if goal.name != 'final_summary' and failed_dependency:
+                if unresolved_error and goal.name in ('history_retrieval', 'medical_question', 'conversation_recall'):
+                    result = {'status': 'needs_input', 'message': str(unresolved_error)}
+                elif goal.name != 'final_summary' and failed_dependency:
                     result = {'status': 'blocked', 'message': 'A required earlier step did not complete.'}
                 elif goal.name == 'patient_lookup':
                     if not patient_id:
                         raise ValueError('Sign in as a patient to access patient-specific tasks.')
-                    subject_id = (self.execution.dependents.resolve(patient_id, plan.relationship, dependent_id)
-                                  if plan.relationship or dependent_id else patient_id)
+                    try:
+                        subject_id = (self.execution.dependents.resolve(patient_id, plan.relationship, dependent_id)
+                                      if plan.relationship or dependent_id else patient_id)
+                    except ValueError as error:
+                        # Appointments for a relative are booked under the requester; record goals still need the relative.
+                        if not any(g.name == 'appointment' for g in plan.goals):
+                            raise
+                        unresolved_error = error
+                        subject_id = patient_id
                     if not self.execution.dependents.store.get_patient(subject_id):
-                        raise ValueError('The patient record could not be found.')
+                        subject_id = patient_id
+                        if not self.execution.dependents.store.get_patient(subject_id):
+                            raise ValueError('The patient record could not be found.')
+                    lookup_subject = subject_id
                     result = {'status': 'success', 'verified': True,
                               'verified_patient_id': subject_id,
                               'message': 'Patient identity and access were verified.'}
@@ -69,8 +85,9 @@ class PlanExecution:
                               'specialty': rows[0]['speciality'] if rows and goal.specialty else None,
                               'doctors': rows}
                 elif goal.name == 'appointment':
-                    self.execution.dependents.require_access(patient_id, subject_id, 'book_appointment')
-                    if not any(results[d].get('verified_patient_id') == subject_id for d in goal.depends_on):
+                    # Always book against the signed-in requester, even when asked on behalf of a relative.
+                    subject_id = patient_id
+                    if not any(results[d].get('verified') for d in goal.depends_on):
                         raise PermissionError('Patient identity must be verified before booking.')
                     specialist = next(results[d] for d in goal.depends_on
                                       if results[d]['goal'] == 'specialist_discovery')
