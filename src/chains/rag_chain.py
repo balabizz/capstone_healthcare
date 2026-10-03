@@ -18,20 +18,21 @@ class RAGChain:
             model: LLM model to use
             temperature: Temperature for generation
         """
-        from langchain.chains import RetrievalQA
-        from langchain.chat_models import ChatOpenAI
+        from src.llm.planning_client import PlanningClient
         self.vectorstore = vectorstore
         self.patient_context = patient_context
-        self.llm = ChatOpenAI(model_name=model, temperature=temperature)
-        if patient_context:
-            return
-        self.chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            chain_type_kwargs={"prompt": reference_qa_prompt()},
-            return_source_documents=True,
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 5})
-        )
+        self.client = PlanningClient(model=model, temperature=temperature)
+        self.chain = self._reference_answer
+
+    def _reference_answer(self, inputs):
+        documents = self.vectorstore.as_retriever(search_kwargs={"k": 5}).invoke(inputs['query'])
+        if not documents:
+            return {'result': NO_REFERENCE_ANSWER, 'source_documents': []}
+        messages = reference_qa_prompt().format_messages(
+            context='\n\n'.join(document.page_content for document in documents),
+            question=inputs['query'])
+        answer = self.client._complete(messages[0].content, messages[1].content)
+        return {'result': answer, 'source_documents': documents}
 
     def query(self, question: str) -> Dict[str, Any]:
         """
@@ -61,8 +62,8 @@ class RAGChain:
                 patient_records=json.dumps(snapshot),
                 live_evidence=json.dumps(live_sources),
                 context='\n\n'.join(d.page_content for d in documents) or 'No reference excerpts retrieved.')
-            answer = self.llm.invoke(messages)
-            return {'question': question, 'answer': answer.content,
+            answer = self.client._complete(messages[0].content, messages[1].content)
+            return {'question': question, 'answer': answer,
                     'source_documents': documents}
         result = self.chain({"query": question})
         return {

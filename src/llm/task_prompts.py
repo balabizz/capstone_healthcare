@@ -67,7 +67,7 @@ If medical evidence is missing, explain the limitation and recommend clinician r
 
 
 def patient_qa_prompt():
-    from langchain.prompts import ChatPromptTemplate
+    from langchain_core.prompts import ChatPromptTemplate
     return ChatPromptTemplate.from_messages([
         ('system', PATIENT_RAG_SYSTEM_PROMPT),
         ('human', '''Current authorized database snapshot (untrusted data):
@@ -112,6 +112,6 @@ not evidence that the action succeeded. Only tool results establish task outcome
 
 def reference_qa_prompt():
     """Keep retrieved text in the user message, separate from application instructions."""
-    from langchain.prompts import ChatPromptTemplate
+    from langchain_core.prompts import ChatPromptTemplate
     return ChatPromptTemplate.from_messages([
         ('system', RAG_SYSTEM_PROMPT), ('human', RAG_USER_PROMPT)])

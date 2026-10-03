@@ -1,10 +1,10 @@
-"""Verify application prompts reach real LangChain composition without network calls."""
+"""Verify application prompts reach retrieval and the HTTP adapter without network calls."""
 import json
 from unittest.mock import Mock
 import pytest
-from langchain_core.callbacks import BaseCallbackHandler
+from types import SimpleNamespace
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.documents import Document
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.retrievers import BaseRetriever
 from src.chains.rag_chain import RAGChain
 from src.llm.task_prompts import (
@@ -12,13 +12,6 @@ from src.llm.task_prompts import (
 from src.agents.planner import Planner
 from src.llm.planning_client import PlanningClient
 from tests.test_planning import sample
-
-
-class CaptureMessages(BaseCallbackHandler):
-    def __init__(self):
-        self.calls = []
-    def on_chat_model_start(self, serialized, messages, **kwargs):
-        self.calls.append(messages[0])
 
 
 class ReferenceRetriever(BaseRetriever):
@@ -30,10 +23,11 @@ class ReferenceRetriever(BaseRetriever):
 
 
 def real_chain(monkeypatch, documents):
-    capture = CaptureMessages()
-    model = FakeListChatModel(responses=['Evidence-based answer'], callbacks=[capture])
-    import langchain.chat_models
-    monkeypatch.setattr(langchain.chat_models, 'ChatOpenAI', lambda **kwargs: model)
+    capture = SimpleNamespace(calls=[])
+    def complete(self, system, user, response_format=None):
+        capture.calls.append([SystemMessage(content=system), HumanMessage(content=user)])
+        return 'Evidence-based answer'
+    monkeypatch.setattr(PlanningClient, '_complete', complete)
     retriever = ReferenceRetriever(documents=documents, queries=[])
     store = Mock()
     store.as_retriever.return_value = retriever
@@ -76,6 +70,7 @@ def test_empty_retrieval_overrides_unsupported_generated_answer(monkeypatch):
     result = chain.query('Uncovered topic')
     assert result['answer'] == NO_REFERENCE_ANSWER
     assert result['source_documents'] == []
+    assert capture.calls == []
 
 
 def test_embedded_commands_and_braces_remain_data(monkeypatch):
@@ -94,7 +89,8 @@ def test_planning_action_extraction_prompt_and_validation_chain():
     payload = sample()
     payload['steps'][3]['preferences'] = {
         'date_from':'2030-01-02','date_to':'2030-01-02',
-        'time_from':'09:00','time_to':'12:00','doctor_name':'Dr Example'}
+        'time_from':'09:00','time_to':'12:00','doctor_name':'Dr Example',
+        'location':None,'consultation_type':None,'reason':None}
     client.plan.return_value = payload
     plan = Planner(client).plan('Find a nephrologist for father on 2 January 2030 in the morning with Dr Example')
     assert ACTION_EXTRACTION_PROMPT in client.plan.call_args.args[0]
@@ -111,3 +107,17 @@ def test_operational_summary_receives_explicit_prompt_and_actual_statuses():
     client.summarize(evidence)
     assert client._complete.call_args.args[0] == FINAL_SUMMARY_PROMPT
     assert json.loads(client._complete.call_args.args[1]) == evidence
+
+
+def test_rag_passes_model_settings_to_http_client():
+    chain = RAGChain(Mock(), model='demo-model', temperature=0.25)
+    assert chain.client.model == 'demo-model'
+    assert chain.client.temperature == 0.25
+
+
+def test_rag_surfaces_actionable_provider_failure(monkeypatch):
+    from src.llm.planning_client import SummaryFailure
+    chain, _, _ = real_chain(monkeypatch, [Document(page_content='Supported reference.')])
+    chain.client._complete = Mock(side_effect=SummaryFailure('rate_limit', 'OpenAI reported a usage limit.'))
+    with pytest.raises(SummaryFailure, match='usage limit'):
+        chain.query('Explain the reference')
