@@ -1,5 +1,6 @@
 """Explicit plans, execution outcomes and memory provenance, not model reasoning."""
 import streamlit as st
+from app.input_layout import REQUEST_INPUT_HEIGHT
 from src.agents.scenario_testing import SCENARIOS, run_scenario
 
 
@@ -60,7 +61,7 @@ def render_scenario_testing():
     with st.expander('Scenario testing sandbox'):
         st.caption('Uses an isolated temporary database and synthetic patients. Only planning uses OpenAI; medical answers and final summaries are fixtures. No real records or bookings are changed. Scenario text is sent to OpenAI; use fictional details.')
         name = st.selectbox('Scenario',list(SCENARIOS),key='scenario_name')
-        query = st.text_area('Scenario request',value=SCENARIOS[name]['query'],key='scenario_query_'+name)
+        query = st.text_area('Scenario request',value=SCENARIOS[name]['query'],key='scenario_query_'+name,height=REQUEST_INPUT_HEIGHT)
         if st.button('Run sandbox scenario'):
             try:
                 with st.spinner('Running synthetic scenario…'):

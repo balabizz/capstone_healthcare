@@ -13,6 +13,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.agents.goal_execution import GoalExecution
+from app.input_layout import REQUEST_INPUT_HEIGHT
 from app.medical_records_view import render_medical_records
 from src.agents.planner import Planner
 from src.agents.plan_execution import PlanExecution
@@ -82,8 +83,8 @@ def render_staff_patient_summary(profile, user_type, execution):
     if st.session_state.get('staff_summary_scope') != scope:
         st.session_state.pop('staff_patient_summary', None)
         st.session_state.staff_summary_scope = scope
-    request = st.text_input('Summary request', value='Summarize the overall patient health records and condition.',
-                            key='staff_summary_request')
+    request = st.text_area('Summary request', value='Summarize the overall patient health records and condition.',
+                            key='staff_summary_request', height=REQUEST_INPUT_HEIGHT)
     if st.button('Generate patient health summary', key='staff_summary_submit'):
         st.session_state.pop('staff_patient_summary', None)
         try:
@@ -296,9 +297,10 @@ def main():
 
     with col1:
         st.header("Medical Assistant")
-        query = st.text_input(
+        query = st.text_area(
             "Ask your medical question",
             placeholder="e.g., What are the symptoms of diabetes?",
+            height=REQUEST_INPUT_HEIGHT,
         )
 
         if st.button("Submit", key="submit_btn"):

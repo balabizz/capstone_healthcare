@@ -89,7 +89,7 @@ def test_staff_ui_checks_cached_summary_before_display(clinic, monkeypatch, even
     ui.session_state = SessionState(staff_patient_summary=cached,
                                    staff_summary_scope=('attendant', actor, 'patient'))
     ui.selectbox.return_value = 'patient'
-    ui.text_input.return_value = 'Summarize health'
+    ui.text_area.return_value = 'Summarize health'
     ui.button.return_value = event == 'regeneration_failed'
     ui.expander.side_effect = lambda *a, **k: nullcontext()
     if event == 'records_changed':

@@ -1,12 +1,13 @@
 """Patient-scoped semantic summary search controls."""
 import streamlit as st
+from app.input_layout import REQUEST_INPUT_HEIGHT
 from src.llm.history_summary import coverage_notice
 
 
 def render_patient_summary_search(profile, execution):
     with st.expander('Search saved patient summary (FAISS)'):
         st.caption('Search applies only to the patient selected under Family & dependents. Results are summary excerpts, not complete medical history.')
-        query = st.text_input('Search summary', key='patient_summary_query')
+        query = st.text_area('Search summary', key='patient_summary_query', height=REQUEST_INPUT_HEIGHT)
         rebuild = st.button('Rebuild patient summary')
         search = st.button('Search patient summary')
         if not (rebuild or search):

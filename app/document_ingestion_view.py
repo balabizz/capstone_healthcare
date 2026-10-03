@@ -1,5 +1,6 @@
 """Staff-facing shared reference library upload and semantic-search preview."""
 import streamlit as st
+from app.input_layout import REQUEST_INPUT_HEIGHT
 from src.data_processing.ingestion import DocumentIngestion
 from src.config import REFERENCE_DOCUMENT_UPLOAD_ROLES
 
@@ -82,7 +83,7 @@ def render_document_ingestion(user_type, ingestion=None):
                 st.dataframe(documents, hide_index=True, use_container_width=True)
             else:
                 st.info('No reference PDFs have been indexed yet.')
-            query = st.text_input('Preview reference search')
+            query = st.text_area('Preview reference search', height=REQUEST_INPUT_HEIGHT)
             if st.button('Search indexed references'):
                 matches = ingestion.store.search(query)
                 if not matches:
